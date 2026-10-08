@@ -1,0 +1,156 @@
+# WaferEdge — Roadmap
+
+Goal: an in-line wafer-map watchdog at the equipment edge. Tool emulators send wafer sort
+results over HSMS / SECS-II; an edge host decodes them without copying, detects spatial
+signatures (CPU AVX2 or CUDA), and sends a lot hold back, with accuracy, throughput and tail
+latency measured. A showcase for advanced C++ (low-latency / HPC techniques) and CUDA, in the
+semiconductor domain. About 3–4 weeks.
+
+Every phase ends green in CI, with tests and at least one measured number.
+
+```
+ Tool emulator ──HSMS/SECS-II (TCP)──► Edge host
+ (replays WaferLens / WM-811K maps)    ├─ net thread: Asio coroutines, zero-copy SECS-II decode
+        ▲                              ├─ lock-free SPSC rings, no allocation on the hot path
+        │                              ├─ analytics: wafer-map signatures, CPU (AVX2) or GPU (CUDA)
+        └── S5F1 alarm / S2F41 HOLD ◄──└─ decision rule → lot hold; latency histogram
+```
+
+---
+
+## Phase 0 — Foundation (1–2 days)
+
+Decisions first (ask the user, then record in ADRs):
+- [ ] C++ standard: install GCC 13 for C++23 (`std::expected`, `std::print`) or stay on C++20
+- [ ] CUDA learning mode: the user writes the kernels with guidance, or Claude writes them
+- [ ] GitHub repo `anson10/WaferEdge` created (ask before creating; public, MIT)
+
+Setup:
+- [ ] Layout: `include/waferedge/`, `src/`, `cuda/`, `tests/`, `bench/`, `fuzz/`, `tools/`,
+      `python/`, `docs/adr/`, `docs/` (see docs/context.md for the module sketch)
+- [ ] CMake ≥ 3.25 with `CMakePresets.json`: `dev` (Debug, g++), `release`, `asan`, `tsan`,
+      `cuda` (CUDA on), `fuzz` (clang + libFuzzer); compilers pinned to `g++` / `gcc` in presets
+- [ ] Warnings as errors (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion`), clang-format,
+      clang-tidy config
+- [ ] FetchContent: Catch2 v3, Google Benchmark, Asio (standalone), fmt if on C++20
+- [ ] CI (GitHub Actions): GCC + Clang build/test, ASan/UBSan job, CUDA compile-only job
+      (nvidia/cuda container or the CUDA toolkit action), later fuzz smoke run
+- [ ] pre-commit: whitespace, clang-format check
+- [ ] ADR-0001: why C++ (and which standard) and CUDA; ADR-0002: repo layout and backends
+      behind one interface; ADR-0003: dependency policy (FetchContent, pinned)
+- [ ] README skeleton: the question, the architecture sketch, status
+- [ ] CLAUDE.md "Commands" section filled in
+
+## Phase 1 — Wafer-map core, CPU (3–4 days)
+
+The domain model and classical spatial analysis, scalar first (the reference), then AVX2.
+- [ ] `WaferMap`: dense grid of bin codes (0 off wafer, 1 pass, ≥2 fail), view types
+      (`std::span`/`mdspan`-like), no per-die allocation; loaders for WaferLens Parquet maps
+      (via a small Python export script to a compact binary format, or Arrow C++) and WM-811K
+- [ ] Features per map: yield, fail density by **radial zone** (centre → edge) and **angular
+      sector**, edge-ring ratio, centre ratio
+- [ ] Defect **clustering**: connected components on fail dies (union-find), cluster sizes,
+      largest cluster, its centroid and shape (elongation, for scratches)
+- [ ] **Scratch** detection: Hough transform over fail dies (line-shaped chains)
+- [ ] **Spatial randomness** test: is the fail field random or clustered (e.g. nearest-
+      neighbour or join-count statistic against a binomial null)
+- [ ] Rule-based classifier: features → {none, center, donut, edge-loc, edge-ring, loc,
+      scratch, random, near-full}, thresholds fitted on a training split only
+- [ ] Tests: hand-built maps per pattern; properties (rotation of a map rotates sectors,
+      cluster labels partition the fail dies, empty / full / single-die maps)
+- [ ] AVX2 backend for the features; tested equal to scalar on random maps
+- [ ] Benchmark (Google Benchmark): maps/s scalar vs AVX2, by map size (24², 30², 40², 64²)
+- [ ] **Evaluation**: on WaferLens's 24,090 sorted maps against `wafer_pattern_truth`, and on
+      WM-811K's labelled lot-disjoint test set: per-pattern recall/precision, macro-F1, next to
+      FabEye's CNN and a trivial baseline (yield threshold). Report where rules win and lose.
+- [ ] `docs/evaluation.md` with the numbers and how to regenerate them
+- [ ] ADR-0004: classical, explainable signatures next to the CNN (why, and what each is for)
+
+## Phase 2 — CUDA backend (4–6 days; the learning-heavy phase)
+
+Same features and clustering as phase 1, batched on the GPU, tested equal to the scalar
+reference, profiled.
+- [ ] CUDA build integration (`CMAKE_CUDA_ARCHITECTURES 86`), a `Backend` concept the CPU and
+      GPU paths both satisfy
+- [ ] Kernel 1: per-map features (radial / angular histograms) with **shared-memory atomics**,
+      one block per map; batches of N maps
+- [ ] Kernel 2: **connected-component labelling** on GPU (iterative union-find, e.g. the
+      "label equivalence" / Playne–Hawick approach); compare with CPU union-find
+- [ ] Kernel 3: **Hough transform** voting with atomics, then a peak search
+- [ ] Memory: pinned host buffers, device buffer pools, **CUDA streams** overlapping copy and
+      compute, no `cudaMalloc` per batch
+- [ ] Tests (local, GPU-labelled): bit-for-bit equal features and equivalent labellings to the
+      scalar reference on random batches
+- [ ] Profiling with Nsight Compute / Systems: occupancy, memory throughput, a roofline-style
+      explanation of each kernel's bound; one optimisation iteration with before/after numbers
+- [ ] Benchmark: throughput (maps/s) and latency per batch for CPU scalar, CPU AVX2 (all
+      threads), GPU, across batch sizes 1 … 65,536; **find the crossover batch size**
+- [ ] `docs/gpu.md`: what each kernel does, the profile, the crossover, and the latency vs
+      throughput trade-off of batching
+- [ ] ADR-0005: GPU batching strategy (fixed batch, deadline-based, or adaptive)
+
+## Phase 3 — SECS-II codec and HSMS transport (4–5 days)
+
+The equipment protocol, from the bytes up.
+- [ ] SECS-II **item codec**: all formats (List, Binary, Boolean, ASCII, I1–I8, U1–U8, F4/F8,
+      JIS-8), length bytes, nesting; **zero-copy decode** to views over the receive buffer;
+      encode into a reusable buffer
+- [ ] `constexpr` format tables; `std::expected`-style (or own `Result`) error handling, no
+      exceptions on the hot path
+- [ ] **HSMS** (SEMI E37) transport on Asio coroutines: 10-byte header, data and control
+      messages, Select / Deselect / Linktest / Separate, T3 / T5 / T6 / T7 / T8 timers,
+      reconnect; active (host) and passive (equipment) roles
+- [ ] HSMS connection state machine as an explicit, tested type
+- [ ] GEM subset (SEMI E30): S1F1/F2 (are you there), S1F13/F14 (establish communication),
+      S6F11/F12 (event report: carries the wafer map and lot/wafer ids), S5F1/F2 (alarm),
+      S2F41/F42 (host command: HOLD / RELEASE lot); communication and control state machines
+- [ ] Tests: round-trip properties (encode → decode is identity) on random item trees; golden
+      byte vectors for known messages; timer behaviour with a fake clock
+- [ ] **Fuzzing**: libFuzzer target on the decoder (and HSMS framing), run in CI for a fixed
+      time; corpus checked in; any crash becomes a regression test
+- [ ] Benchmark: messages/s decoded and encoded, allocation count per message (should be 0)
+- [ ] `docs/secs.md`: the subset implemented, message layouts used, what is out of scope
+- [ ] ADR-0006: zero-copy views and error handling; ADR-0007: Asio coroutines for HSMS
+
+## Phase 4 — The edge pipeline (3–4 days)
+
+Putting it together, closed loop, with honest tail latency.
+- [ ] **Tool emulator** (passive HSMS equipment): replays WaferLens maps in `tested_at` order
+      as S6F11 events at a configurable rate, honours S2F41 HOLD (stops sending that lot)
+- [ ] **Edge host**: network thread → **lock-free SPSC ring** → analytics thread(s) → decision
+      thread → S2F41 back; cache-line aligned slots, no false sharing, optional thread pinning
+- [ ] Lock-free queue tests: TSan, a stress test with a checker, a benchmark against a mutex
+      queue
+- [ ] **Allocation-free hot path**: `std::pmr` / arena buffers; a test that fails on any
+      allocation per message
+- [ ] Decision rule: hold the lot after k wafers with the same signature within a window
+      (k configurable); also raise S5F1 alarms
+- [ ] **Latency measurement**: per wafer, from the emulator's send timestamp to the HOLD being
+      received, on a steady clock; HDR-style histogram; constant-rate load so coordinated
+      omission is accounted for; p50 / p99 / p99.9 / max
+- [ ] Experiments: CPU vs GPU backend, batch size / deadline, load (maps/s) vs tail latency
+- [ ] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,
+      against WaferLens's batch pattern alarm (median 52 h, mostly sort lag) and against no hold
+- [ ] `docs/pipeline.md` and ADR-0008 (threading and queue design)
+
+## Phase 5 — Python bindings and launch (2–3 days)
+
+- [ ] pybind11 module: features, classifier and clustering on NumPy arrays (zero-copy buffer
+      protocol); wheel via scikit-build-core; tested from pytest
+- [ ] Optional: a WaferLens-side script comparing WaferEdge's rule-based patterns with FabEye's
+      CNN on the same wafers (lives in WaferEdge, reads WaferLens data; WaferLens unchanged)
+- [ ] README: the question, architecture, results tables (accuracy vs FabEye, CPU vs GPU
+      throughput and crossover, decode rate, tail latency, closed-loop result), how to
+      reproduce each, limitations (simulated data, GPU tests local only)
+- [ ] Release workflow (as in Path-Finding-Visualiser): tag `v1.0.0` → Linux build artifacts
+      (and the Python wheel); release notes in `docs/release-notes/`
+- [ ] Website project page and CV line (the user's personal site: ~/personal-web-mig/ansonantony-v2)
+
+---
+
+## Rules for the whole project
+- Every phase ends green in CI and with a measured number.
+- Every speed claim names the machine, the build type and the command that produced it.
+- No backend ships without a test against the scalar reference.
+- Commits: `type(scope): subject` + 3–5 bullets; one feature branch per checklist group;
+  no Claude attribution.
