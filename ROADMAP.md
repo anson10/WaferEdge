@@ -3,8 +3,11 @@
 Goal: an in-line wafer-map watchdog at the equipment edge. Tool emulators send wafer sort
 results over HSMS / SECS-II; an edge host decodes them without copying, detects spatial
 signatures (CPU AVX2 or CUDA), and sends a lot hold back, with accuracy, throughput and tail
-latency measured. A showcase for advanced C++ (low-latency / HPC techniques) and CUDA, in the
-semiconductor domain. About 3–4 weeks.
+latency measured. Next to the classical detectors, FabEye's CNN runs on **WaferEdge's own CUDA
+inference engine** (implicit-GEMM convolution, kernel fusion, int8 on tensor cores). A showcase
+for advanced C++ (low-latency / HPC techniques), CUDA and ML inference, in the semiconductor
+domain. About 4–5 weeks for phases 0–5; phase 6 (a local LLM writing the incident note on the
+same engine) is a stretch goal.
 
 Every phase ends green in CI, with tests and at least one measured number.
 
@@ -13,6 +16,7 @@ Every phase ends green in CI, with tests and at least one measured number.
  (replays WaferLens / WM-811K maps)    ├─ net thread: Asio coroutines, zero-copy SECS-II decode
         ▲                              ├─ lock-free SPSC rings, no allocation on the hot path
         │                              ├─ analytics: wafer-map signatures, CPU (AVX2) or GPU (CUDA)
+        │                              ├─ inference: FabEye's CNN on our own CUDA kernels (fp32 / fp16 / int8)
         └── S5F1 alarm / S2F41 HOLD ◄──└─ decision rule → lot hold; latency histogram
 ```
 
@@ -66,7 +70,7 @@ The domain model and classical spatial analysis, scalar first (the reference), t
 - [ ] `docs/evaluation.md` with the numbers and how to regenerate them
 - [ ] ADR-0004: classical, explainable signatures next to the CNN (why, and what each is for)
 
-## Phase 2 — CUDA backend (4–6 days; the learning-heavy phase)
+## Phase 2a — CUDA backend for the classical detectors (4–6 days; the learning-heavy phase)
 
 Same features and clustering as phase 1, batched on the GPU, tested equal to the scalar
 reference, profiled.
@@ -89,6 +93,41 @@ reference, profiled.
       throughput trade-off of batching
 - [ ] ADR-0005: GPU batching strategy (fixed batch, deadline-based, or adaptive)
 
+## Phase 2b — Inference engine: FabEye's CNN on our own kernels (5–7 days)
+
+Run FabEye's trained CNN without ONNX Runtime or PyTorch: the core skills of an LLM inference
+engine (GEMM, tensor cores, quantisation, fusion), learned on a model we know. The model
+facts (layers, preprocessing, calibration) are in docs/context.md.
+- [ ] Weights: export from FabEye's ONNX / checkpoint to a simple binary format (script in
+      `tools/`), **fold BatchNorm into the convolutions** at export; a C++ loader with checks
+      (shapes, a hash) — FabEye's repo is read, never modified
+- [ ] Preprocessing in C++ exactly as FabEye's (`cv2.resize` INTER_NEAREST to 64×64, one-hot
+      channels off / good / fail); a test against FabEye's Python output on real maps
+- [ ] CPU reference forward pass (scalar, readable): conv3×3 + ReLU, maxpool, global average
+      pool, linear, softmax; **matches ONNX Runtime's logits** on 1,000 maps (max abs diff
+      tolerance stated)
+- [ ] **GEMM ladder** (the CUDA learning core): naive → shared-memory tiling → register
+      blocking → vectorised loads → **tensor cores** (WMMA / `mma.sync`, fp16 in, fp32 accumulate);
+      each step benchmarked against cuBLAS (% of cuBLAS throughput), cuBLAS used only as the
+      yardstick
+- [ ] Convolution as **implicit GEMM** on top of it; **fused** conv + bias + ReLU (+ maxpool)
+      kernels; layer timings before/after fusion
+- [ ] **int8 quantisation**: per-channel weight scales, activation scales calibrated on held-out
+      maps (never the test set), int8 tensor-core GEMM
+- [ ] Batching with streams and pinned memory (shared with phase 2a); CUDA Graphs for a fixed
+      batch shape
+- [ ] **Accuracy must survive**: fp32 / fp16 / int8 macro-F1 on FabEye's lot-disjoint test set,
+      and **conformal coverage** with FabEye's calibration (90% sets still cover ≈ 90%; the
+      selective-accept rule at 0.688 still keeps error ≈ 2%). If int8 breaks coverage, report it
+      and recalibrate, don't hide it
+- [ ] Benchmark: wafers/s and per-batch latency against ONNX Runtime CPU (FabEye's ~412/s) and
+      GPU, PyTorch, and TensorRT if installable; Nsight profile of the hottest kernel
+- [ ] The CNN as a third detector in the pipeline (phase 4) next to the rules; agreement / fusion
+      of rule-based and CNN signals reported
+- [ ] `docs/inference.md` (the GEMM ladder table, quantisation results, coverage check)
+- [ ] ADR-0006: own kernels instead of TensorRT/ONNX Runtime (why: learning and control; what
+      it costs), and the int8 scheme
+
 ## Phase 3 — SECS-II codec and HSMS transport (4–5 days)
 
 The equipment protocol, from the bytes up.
@@ -110,7 +149,7 @@ The equipment protocol, from the bytes up.
       time; corpus checked in; any crash becomes a regression test
 - [ ] Benchmark: messages/s decoded and encoded, allocation count per message (should be 0)
 - [ ] `docs/secs.md`: the subset implemented, message layouts used, what is out of scope
-- [ ] ADR-0006: zero-copy views and error handling; ADR-0007: Asio coroutines for HSMS
+- [ ] ADR-0007: zero-copy views and error handling; ADR-0008: Asio coroutines for HSMS
 
 ## Phase 4 — The edge pipeline (3–4 days)
 
@@ -128,10 +167,11 @@ Putting it together, closed loop, with honest tail latency.
 - [ ] **Latency measurement**: per wafer, from the emulator's send timestamp to the HOLD being
       received, on a steady clock; HDR-style histogram; constant-rate load so coordinated
       omission is accounted for; p50 / p99 / p99.9 / max
-- [ ] Experiments: CPU vs GPU backend, batch size / deadline, load (maps/s) vs tail latency
+- [ ] Experiments: rules on CPU vs GPU vs the CNN (fp16 / int8), batch size / deadline, load
+      (maps/s) vs tail latency
 - [ ] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,
       against WaferLens's batch pattern alarm (median 52 h, mostly sort lag) and against no hold
-- [ ] `docs/pipeline.md` and ADR-0008 (threading and queue design)
+- [ ] `docs/pipeline.md` and ADR-0009 (threading and queue design)
 
 ## Phase 5 — Python bindings and launch (2–3 days)
 
@@ -145,6 +185,26 @@ Putting it together, closed loop, with honest tail latency.
 - [ ] Release workflow (as in Path-Finding-Visualiser): tag `v1.0.0` → Linux build artifacts
       (and the Python wheel); release notes in `docs/release-notes/`
 - [ ] Website project page and CV line (the user's personal site: ~/personal-web-mig/ansonantony-v2)
+
+## Phase 6 (stretch) — LLM incident note on the same engine (1–2 weeks)
+
+Only after phases 0–5 ship. When the edge host holds a lot, a small local LLM turns the
+verified facts into a short note for the engineer. The LLM summarises facts; it never diagnoses.
+- [ ] Model choice (ADR): Qwen2.5 0.5B / 1.5B or TinyLlama 1.1B instruct; fits 6 GB with int8 /
+      int4 weights; licence checked
+- [ ] Transformer kernels on the phase-2b GEMM: RMSNorm, RoPE, softmax, **fused attention**
+      (FlashAttention-style tiling), KV cache, int8 / int4 weight dequantisation, sampling
+- [ ] Tokenizer (BPE) in C++ or a pinned library; logits match the reference implementation
+      (llama.cpp or Hugging Face) on fixed prompts
+- [ ] Prompt from structured facts only: pattern, confidence and prediction set (CNN), zone
+      statistics and k-in-a-row rule (rules), lot / wafer ids, optional WaferLens commonality
+      suspect
+- [ ] **Faithfulness check, automatic**: every number, pattern, chamber and id in the note must
+      appear in the input facts; hallucination rate over ≥ 500 generated notes, before and after
+      prompt / decoding fixes
+- [ ] Benchmark: tokens/s (prefill and decode) and memory against llama.cpp on the same GPU;
+      note latency stays off the hold path (the hold never waits for the note)
+- [ ] `docs/llm.md`, ADR on the model and quantisation
 
 ---
 

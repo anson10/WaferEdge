@@ -9,13 +9,16 @@ before the next wafer is processed?**
 Tool emulators send wafer sort results over **SEMI HSMS / SECS-II** (the protocol every fab
 tool speaks to the factory host). An edge host decodes them without copying, finds spatial
 signatures on the wafer maps (CPU with AVX2, or batched on the GPU with CUDA), and closes
-the loop by sending a lot hold (S2F41) back to the tool. Everything is measured: accuracy
-against ground truth, throughput, and tail latency (p50 / p99 / p99.9) from sort result to
-hold.
+the loop by sending a lot hold (S2F41) back to the tool. Next to the classical detectors,
+FabEye's CNN runs on WaferEdge's **own CUDA inference engine** (GEMM ladder up to tensor cores,
+implicit-GEMM convolution, kernel fusion, int8). Everything is measured: accuracy against
+ground truth, throughput, and tail latency (p50 / p99 / p99.9) from sort result to hold. A
+stretch phase adds a small local LLM, on the same engine, that writes the incident note from
+verified facts.
 
 It is a portfolio project for semiconductor data / yield / analytics and equipment-software
 roles in Germany, and the user's way to **learn advanced C++ (HPC / low-latency techniques)
-and CUDA**. `ROADMAP.md` is the source of truth for scope and order; tick its boxes as items
+and CUDA, including ML inference engines**. `ROADMAP.md` is the source of truth for scope and order; tick its boxes as items
 land. `docs/context.md` has the background: the user, the sister projects, data sources,
 the machine, and the design sketch. Read both before starting work.
 
@@ -24,14 +27,17 @@ the machine, and the design sketch. Read both before starting work.
   simulator that logs ground truth. **WaferEdge replays its wafer maps and scores against its
   ground truth.** Don't modify WaferLens from this project; it has its own chat and CLAUDE.md.
 - `~/FabEye` (github.com/anson10/FabEye, v2.0.0): CNN wafer-map classifier served over
-  FastAPI. **The ML baseline** WaferEdge's classical detectors are compared with.
+  FastAPI. **The ML baseline** for the classical detectors, and **the model WaferEdge's
+  inference engine runs** (phase 2b): its ONNX file, weights and conformal calibration are
+  read from `~/FabEye`, never modified.
 - `~/Path-Finding-Visualiser` (v2.0.0): the user's earlier C++ project (CMake, Catch2 property
   tests, sanitizers, GCC/Clang/MSVC CI, release workflow). Reuse its CI and release patterns.
 
 ## Stack (decided)
 - C++20 at least (C++23 if GCC 13 is installed: open decision, see docs/context.md), CMake
   with presets, Ninja
-- CUDA 12.4 (RTX 3050 Laptop, compute capability 8.6), Nsight Compute / Systems
+- CUDA 12.4 (RTX 3050 Laptop, compute capability 8.6), Nsight Compute / Systems; tensor cores
+  via WMMA / `mma.sync`; cuBLAS only as a benchmark yardstick, never in the shipped path
 - Asio (standalone) with C++20 coroutines for HSMS networking
 - Catch2 v3 (tests), Google Benchmark (micro), libFuzzer (SECS-II parser), ASan / UBSan / TSan
 - pybind11 + scikit-build-core for the Python wheel (phase 5)
@@ -39,7 +45,9 @@ the machine, and the design sketch. Read both before starting work.
 
 ## Conventions
 - **Correctness first, then speed, and every speed claim is measured.** Each backend (CPU
-  scalar, CPU AVX2, CUDA) is tested against the scalar reference on the same inputs.
+  scalar, CPU AVX2, CUDA) is tested against the scalar reference on the same inputs; the
+  inference engine is tested against ONNX Runtime's logits, and quantised models must keep
+  accuracy **and conformal coverage** (reported, never hidden).
 - **Honest evaluation**, as in WaferLens and FabEye: every detector is scored against ground
   truth next to a baseline (FabEye's CNN, and a trivial rule); negative results are kept and
   reported. Never quote a number without how it was measured.
