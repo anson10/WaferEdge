@@ -1,0 +1,61 @@
+#pragma once
+
+#include <cstdint>
+#include <map>
+#include <span>
+#include <utility>
+#include <vector>
+
+// Where each die sits on the wafer: its radial zone and angular sector.
+//
+// Both depend only on the grid shape, so they are computed once per shape and every map of
+// that shape reuses them; per map, features are then integer counts over these tables (the
+// same counts on the CPU, with AVX2 and on the GPU).
+//
+// The arithmetic is exact. Die (r, c) has its centre at doubled, integer coordinates
+//   X = 2c - (cols - 1),  Y = (rows - 1) - 2r        (Y points up)
+// and the wafer is the ellipse inscribed in the grid (WM-811K dies are not square, so a
+// 25 x 27 grid is a circle in millimetres). The normalised radius is
+//   rho^2 = (X / cols)^2 + (Y / rows)^2,   0 at the centre, 1 at the grid's inscribed edge.
+// Zones are equal-area rings: zone k holds k/K <= rho^2 < (k+1)/K, last zone open-ended.
+// Sectors are 45-degree octants counter-clockwise from +X, in the same normalised frame,
+// half-open so every die has exactly one sector; rotating a square map by 90 degrees moves
+// every die exactly two sectors on.
+namespace waferedge {
+
+inline constexpr int kZones = 5;   // centre, three middle rings, edge (equal area)
+inline constexpr int kSectors = 8; // 45-degree octants
+
+// Exact zone and sector of a die, from the formulas above. Exposed for tests.
+[[nodiscard]] int zone_of(int row, int col, int rows, int cols) noexcept;
+[[nodiscard]] int sector_of(int row, int col, int rows, int cols) noexcept;
+
+class Geometry {
+public:
+    Geometry(int rows, int cols);
+
+    [[nodiscard]] int rows() const noexcept { return rows_; }
+    [[nodiscard]] int cols() const noexcept { return cols_; }
+    // Row-major, one entry per grid position (off-wafer positions too).
+    [[nodiscard]] std::span<const std::uint8_t> zones() const noexcept { return zones_; }
+    [[nodiscard]] std::span<const std::uint8_t> sectors() const noexcept { return sectors_; }
+
+private:
+    int rows_;
+    int cols_;
+    std::vector<std::uint8_t> zones_;
+    std::vector<std::uint8_t> sectors_;
+};
+
+// Geometry per grid shape, built on first use. References stay valid for the cache's life.
+// Not thread-safe: one cache per thread, or fill it before the threads start.
+class GeometryCache {
+public:
+    [[nodiscard]] const Geometry& get(int rows, int cols);
+    [[nodiscard]] std::size_t size() const noexcept { return shapes_.size(); }
+
+private:
+    std::map<std::pair<int, int>, Geometry> shapes_;
+};
+
+} // namespace waferedge

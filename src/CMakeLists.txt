@@ -1,4 +1,9 @@
-add_library(waferedge machine.cpp)
+add_library(waferedge
+  features.cpp
+  geometry.cpp
+  machine.cpp
+  map_file.cpp
+  wafer_map.cpp)
 add_library(waferedge::waferedge ALIAS waferedge)
 target_include_directories(waferedge PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(waferedge PRIVATE waferedge_options)
