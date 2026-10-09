@@ -31,6 +31,22 @@ int padded_k(int in_channels) {
     return (in_channels * 9 + 31) / 32 * 32; // K = in * 9, rounded up for 32-deep WMMA steps
 }
 
+// PyTorch orders a convolution's weights [out][in][tap]; the kernels want K tap-major,
+// [out][tap][in], so that one K step (a multiple of 8, 16 or 32) covers a single tap of
+// consecutive channels and the gather checks its bounds once per step (cnn_kernels.cu).
+std::vector<float> tap_major(const cnn::Conv& c) {
+    std::vector<float> w(c.weight.size());
+    const auto in = static_cast<std::size_t>(c.in);
+    for (std::size_t o = 0; o < static_cast<std::size_t>(c.out); ++o) {
+        for (std::size_t i = 0; i < in; ++i) {
+            for (std::size_t tap = 0; tap < 9; ++tap) {
+                w[(o * 9 + tap) * in + i] = c.weight[(o * in + i) * 9 + tap];
+            }
+        }
+    }
+    return w;
+}
+
 } // namespace
 
 struct CnnEngine::Impl {
@@ -42,7 +58,8 @@ struct CnnEngine::Impl {
     cudaStream_t stream = nullptr;
     std::vector<cudaEvent_t> events;
 
-    // Weights on the device: fp32 [out][in * 9] or fp16 [out][padded k]; biases fp32.
+    // Weights on the device, K tap-major: fp32 [out][9 * in], fp16 / int8 [out][padded k];
+    // biases fp32.
     std::array<void*, cnn::kConvLayers> weight{};
     std::array<float*, cnn::kConvLayers> bias{};
     std::array<cnn::Conv, cnn::kConvLayers> shape{}; // in / out channels only
@@ -131,9 +148,10 @@ CnnEngine::CnnEngine(const cnn::Model& model, CnnPrecision precision,
         m.shape[l].in = c.in;
         m.shape[l].out = c.out;
         m.upload(m.bias[l], c.bias.data(), c.bias.size());
+        const std::vector<float> weight = tap_major(c);
         if (precision == CnnPrecision::fp32) {
             float* w = nullptr;
-            m.upload(w, c.weight.data(), c.weight.size());
+            m.upload(w, weight.data(), weight.size());
             m.weight[l] = w;
         } else if (precision == CnnPrecision::int8) {
             // Symmetric per output channel: w = w_int * s_w[c], s_w[c] = max |w[c, :]| / 127.
@@ -148,12 +166,12 @@ CnnEngine::CnnEngine(const cnn::Model& model, CnnPrecision precision,
             for (int o = 0; o < c.out; ++o) {
                 float top = 0.0F;
                 for (int i = 0; i < k; ++i) {
-                    top = std::max(top, std::abs(c.weight[static_cast<std::size_t>(o) * k + i]));
+                    top = std::max(top, std::abs(weight[static_cast<std::size_t>(o) * k + i]));
                 }
                 const float s_w = top > 0.0F ? top / 127.0F : 1.0F;
                 for (int i = 0; i < k; ++i) {
                     const float q =
-                        std::nearbyint(c.weight[static_cast<std::size_t>(o) * k + i] / s_w);
+                        std::nearbyint(weight[static_cast<std::size_t>(o) * k + i] / s_w);
                     w[static_cast<std::size_t>(o) * kp + i] =
                         static_cast<signed char>(std::clamp(q, -127.0F, 127.0F));
                 }
@@ -173,7 +191,7 @@ CnnEngine::CnnEngine(const cnn::Model& model, CnnPrecision precision,
             for (int o = 0; o < c.out; ++o) {
                 for (int i = 0; i < k; ++i) {
                     w[static_cast<std::size_t>(o) * kp + i] =
-                        __float2half(c.weight[static_cast<std::size_t>(o) * k + i]);
+                        __float2half(weight[static_cast<std::size_t>(o) * k + i]);
                 }
             }
             __half* dw = nullptr;

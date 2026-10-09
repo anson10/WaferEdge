@@ -41,6 +41,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 using namespace waferedge;
@@ -402,14 +403,17 @@ int run(int argc, char** argv) {
            (args[args.size() - 2] == "--gpu" || args[args.size() - 2] == "--scales")) {
         if (args[args.size() - 2] == "--gpu") {
             const auto& name = args.back();
-            if (name != "fp32" && name != "fp16" && name != "int8") {
+            constexpr std::array<std::pair<std::string_view, gpu::CnnPrecision>, 3> kPrecisions{
+                {{"fp32", gpu::CnnPrecision::fp32},
+                 {"fp16", gpu::CnnPrecision::fp16},
+                 {"int8", gpu::CnnPrecision::int8}}};
+            const auto* found =
+                std::ranges::find(kPrecisions, std::string_view(name),
+                                  &std::pair<std::string_view, gpu::CnnPrecision>::first);
+            if (found == kPrecisions.end()) {
                 return fail("--gpu takes fp32, fp16 or int8");
             }
-            gpu = GpuChoice{name,
-                            name == "fp32" ? gpu::CnnPrecision::fp32
-                                           : (name == "fp16" ? gpu::CnnPrecision::fp16
-                                                             : gpu::CnnPrecision::int8),
-                            {}};
+            gpu = GpuChoice{name, found->second, {}};
         } else {
             scales_path = args.back();
         }
@@ -423,9 +427,16 @@ int run(int argc, char** argv) {
         gpu->scales = *scales;
     }
     if (args.size() < 3) {
-        std::fputs("usage: waferedge-cnn verify <model.wcnn> <file.wmap> <logits.bin>\n"
-                   "       waferedge-cnn eval <model.wcnn> <file.wmap> [train|val|test|all]\n",
-                   stderr);
+        std::fputs(
+            "usage: waferedge-cnn verify <model.wcnn> <file.wmap> <logits.bin>\n"
+            "       waferedge-cnn eval <model.wcnn> <file.wmap> [train|val|test|all]\n"
+            "  cuda build only:\n"
+            "       waferedge-cnn agree <model.wcnn> <file.wmap> [split]   (vs GPU fp32)\n"
+            "       waferedge-cnn layers <model.wcnn> <file.wmap>          (per-layer ms)\n"
+            "       waferedge-cnn calibrate <model.wcnn> <file.wmap> <out.txt> [maps=2048]\n"
+            "       waferedge-cnn conformal <model.wcnn> <file.wmap> <conformal.txt> [split]\n"
+            "  options: --gpu fp32|fp16|int8, --scales <file> (int8)\n",
+            stderr);
         return 2;
     }
     auto model = cnn::load_model(args[1]);

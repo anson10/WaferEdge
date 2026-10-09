@@ -2,8 +2,9 @@
 
 // The CNN's kernels, launched by the CNN engine (cuda/cnn_engine.cu). Activations are
 // [channel][image][y][x] ("CNHW"); a convolution is the GEMM out = W * P with
-//   M = out channels, N = images * H * W, K = in channels * 9 (in, ky, kx),
-// where P (the patches) is never stored: tiles of it are gathered while they are staged.
+//   M = out channels, N = images * H * W, K = 9 * in channels, ordered (ky, kx, in): tap-major,
+// the weights reordered by the engine. P (the patches) is never stored: tiles of it are
+// gathered while they are staged.
 #include "kernels.cuh"
 
 #include <cuda_fp16.h>
@@ -30,12 +31,12 @@ struct ConvShape {
     int side; // H = W
 };
 
-// fp32 implicit-GEMM 3x3 convolution, padding 1. weight: out x (in * 9). fused: out =
+// fp32 implicit-GEMM 3x3 convolution, padding 1. weight: out x (9 * in), tap-major. fused: out =
 // ReLU(conv + bias); otherwise out = conv (bias_relu does the rest).
 cudaError_t launch_conv_fp32(const ConvShape& s, const float* weight, const float* bias,
                              const float* in, float* out, bool fused, cudaStream_t stream);
 
-// Tensor-core implicit GEMM: weight fp16, out x padded_k (padded_k = in * 9 rounded up to a
+// Tensor-core implicit GEMM: weight fp16 tap-major, out x padded_k (9 * in rounded up to a
 // multiple of 32, zero-filled); bias fp32; fp32 accumulation.
 cudaError_t launch_conv_fp16(const ConvShape& s, int padded_k, const __half* weight,
                              const float* bias, const __half* in, __half* out, bool fused,

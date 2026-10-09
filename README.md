@@ -34,7 +34,8 @@ whole CPU at large batches; replayed as CUDA Graphs, the GPU passes the whole CP
 a batch ([docs/gpu.md](docs/gpu.md), ADR-0007). Phase 2b (the inference engine) has started: FabEye's
 CNN runs on WaferEdge's own GEMM ladder and implicit-GEMM convolutions on the GPU (fp32, fp16
 and int8 tensor cores), with FabEye's macro-F1 and conformal coverage in every precision,
-~5,000 maps/s, and ~1 ms for a single map ([docs/inference.md](docs/inference.md)).
+~11,000 (fp16) to ~13,000 (int8) maps/s, and under 1 ms for a single map
+([docs/inference.md](docs/inference.md)).
 
 ## Build
 
@@ -97,15 +98,16 @@ the Hough transform is enough.
 end to end per batch, against FabEye's model on ONNX Runtime CPU and PyTorch on this GPU
 (model time only for those):
 
-| Batch | ONNX Runtime CPU | PyTorch fp16 | WaferEdge fp16 |
-|---|---|---|---|
-| 1 | 452 maps/s | 275 | 915 (1.1 ms) |
-| 256 | 743 | 6,560 | 4,899 |
+| Batch | ONNX Runtime CPU | PyTorch fp16 | WaferEdge fp16 | WaferEdge int8 |
+|---|---|---|---|---|
+| 1 | 540 maps/s | 254 | 964 | 1,212 (0.83 ms) |
+| 256 | 790 | 6,283 | 10,960 | 12,960 |
 
+(RTX 3050 Laptop held at 0.83–0.99 GHz by its power cap during the run; wall clock, ±10–20%.)
 Same macro-F1 as FabEye (0.858) in fp32 and fp16, and FabEye's conformal coverage held in
 every precision (90% target: fp32 / fp16 / int8 0.8925 / 0.8926 / 0.8951; FabEye's own
-0.8925). int8 (calibrated on validation maps) is ~16% faster than fp16 and changes the class
-of 0.15% of maps. `build/cuda/bench/bench-cnn`, `python3 tools/bench_cnn_yardsticks.py`,
+0.8925). int8 (calibrated on validation maps) changes the class of 0.15% of maps. Rewriting
+the convolutions' patch gather cut their cycles by 74% (fp16) and 70% (int8). `build/cuda/bench/bench-cnn`, `python3 tools/bench_cnn_yardsticks.py`,
 `waferedge-cnn conformal`.
 
 **Pattern classification** ([docs/evaluation.md](docs/evaluation.md)): macro-F1 on the same maps.
