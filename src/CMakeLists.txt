@@ -24,6 +24,7 @@ target_compile_definitions(waferedge
 if(WAFEREDGE_CUDA)
   target_sources(waferedge PRIVATE
     gpu_info.cpp
+    ${PROJECT_SOURCE_DIR}/cuda/cluster_kernel.cu
     ${PROJECT_SOURCE_DIR}/cuda/feature_kernels.cu
     ${PROJECT_SOURCE_DIR}/cuda/hough_kernel.cu
     ${PROJECT_SOURCE_DIR}/cuda/signature_engine.cu)

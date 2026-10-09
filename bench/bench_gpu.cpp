@@ -8,6 +8,7 @@
 // side from CUDA events. The CPU number is AVX2 on one thread, map by map.
 #include "support/synth.hpp"
 #include "waferedge/backend.hpp"
+#include "waferedge/clusters.hpp"
 #include "waferedge/gpu_signatures.hpp"
 #include "waferedge/hough.hpp"
 #include "waferedge/machine.hpp"
@@ -149,6 +150,57 @@ void BM_gpu_hough(benchmark::State& state) {
     state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(n));
 }
 
+void BM_cpu_clusters(benchmark::State& state) {
+    const auto n = static_cast<std::size_t>(state.range(0));
+    const auto& all = maps();
+    ClusterFinder finder;
+    for (auto _ : state) {
+        for (std::size_t i = 0; i < n; ++i) {
+            finder.run(all[i]);
+            benchmark::DoNotOptimize(finder.summary());
+        }
+    }
+    state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(n));
+}
+
+// GPU signatures by batch: clusters only, or features + Hough + clusters on one upload.
+void run_gpu_signatures(benchmark::State& state, bool all_three) {
+    if (!backend::Cuda::available()) {
+        state.SkipWithError("no CUDA device");
+        return;
+    }
+    const auto n = static_cast<std::size_t>(state.range(0));
+    const Geometry geometry(kSide, kSide);
+    const auto& all = maps();
+    const std::vector<WaferMapView> views(all.begin(),
+                                          all.begin() + static_cast<std::ptrdiff_t>(n));
+    const std::vector<const Geometry*> geometries(n, &geometry);
+    std::vector<Features> features(all_three ? n : 0);
+    std::vector<HoughLine> lines(all_three ? n : 0);
+    std::vector<ClusterSummary> clusters(n);
+    gpu::SignatureEngine engine;
+    if (!engine.run(views, geometries, features, lines, clusters)) { // warm-up
+        state.SkipWithError(engine.error().c_str());
+        return;
+    }
+    for (auto _ : state) {
+        if (!engine.run(views, geometries, features, lines, clusters)) {
+            state.SkipWithError(engine.error().c_str());
+            return;
+        }
+    }
+    state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(n));
+}
+
+void BM_gpu_clusters(benchmark::State& state) {
+    run_gpu_signatures(state, false);
+}
+
+// The pipeline's case: every signature from one upload.
+void BM_gpu_all_signatures(benchmark::State& state) {
+    run_gpu_signatures(state, true);
+}
+
 void batches(benchmark::internal::Benchmark* b) {
     for (std::int64_t n = 1; n <= static_cast<std::int64_t>(kMaxBatch); n *= 4) {
         b->Arg(n);
@@ -162,6 +214,9 @@ BENCHMARK(BM_gpu_warp_aggregated)->Apply(batches)->UseRealTime();
 // The CPU Hough is ~50 us a map: stop its sweep at 4096 maps (~0.2 s a batch).
 BENCHMARK(BM_cpu_hough)->RangeMultiplier(4)->Range(1, 4096)->UseRealTime();
 BENCHMARK(BM_gpu_hough)->Apply(batches)->UseRealTime();
+BENCHMARK(BM_cpu_clusters)->RangeMultiplier(4)->Range(1, 16384)->UseRealTime();
+BENCHMARK(BM_gpu_clusters)->Apply(batches)->UseRealTime();
+BENCHMARK(BM_gpu_all_signatures)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_gpu_shared_atomics_timed)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_gpu_warp_aggregated_timed)->Apply(batches)->UseRealTime();
 

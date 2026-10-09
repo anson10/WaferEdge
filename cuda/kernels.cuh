@@ -3,6 +3,7 @@
 // What the signature engine and its kernels share: the per-map descriptor at the front of
 // every upload, and one host-side launch function per kernel (each .cu file owns its kernels;
 // launching through a plain function keeps them out of the engine's translation unit).
+#include "waferedge/clusters.hpp"
 #include "waferedge/features.hpp"
 #include "waferedge/hough.hpp"
 
@@ -32,6 +33,15 @@ cudaError_t launch_features(bool warp_aggregated, unsigned count, const MapDesc*
 // The strongest Hough line of `count` maps into out[0..count), one block per map.
 cudaError_t launch_hough(unsigned count, const MapDesc* descs, const std::uint8_t* bins,
                          HoughLine* out, cudaStream_t stream);
+
+// Maps with up to this many grid positions keep their union-find trees in shared memory;
+// larger maps need the global scratch: 8 bytes per bin byte, laid out like the bins section.
+inline constexpr unsigned kClusterSharedPositions = 4096;
+
+// The cluster count and largest cluster of `count` maps into out[0..count), one block per map.
+// scratch may be null when no map has more than kClusterSharedPositions positions.
+cudaError_t launch_clusters(unsigned count, const MapDesc* descs, const std::uint8_t* bins,
+                            int* scratch, ClusterSummary* out, cudaStream_t stream);
 
 // Copies the Q14 cos / sin tables (hough_cos(), hough_sin()) to the GPU's constant memory and
 // sets the Hough kernel's shared-memory carveout. Once per process is enough; calling it

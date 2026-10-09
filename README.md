@@ -29,7 +29,8 @@ scratch search, a join-count randomness test, [docs/signatures.md](docs/signatur
 an explainable rule classifier evaluated against FabEye's CNN
 ([docs/evaluation.md](docs/evaluation.md)); the feature counts also run on AVX2
 ([docs/avx2.md](docs/avx2.md)). Phase 2a (CUDA) is under way: the feature counts run on the
-GPU in batches, and the Hough transform 26–84× faster than one CPU core ([docs/gpu.md](docs/gpu.md)).
+GPU in batches, with the Hough transform and the clusters: all three from one upload ~66× one
+CPU core at large batches ([docs/gpu.md](docs/gpu.md)).
 
 ## Build
 
@@ -70,6 +71,10 @@ Every number here names the machine and the command that produced it.
 
 Real data, every copy included: WaferLens 651k vs 19.9k maps/s, WM-811K 401k vs 15.4k
 (`build/cuda/tools/waferedge-maps <file>`, which also checks GPU == CPU on every map).
+
+**All three signatures** (features, Hough, clusters) on one upload: ~0.82M maps/s against
+~12.5k on one CPU core (`BM_gpu_all_signatures`); real data with every copy: WaferLens 482k,
+WM-811K 247k maps/s.
 
 `build/cuda/bench/bench-gpu`. Counting features is too little work per byte to win over PCIe;
 the Hough transform is enough.

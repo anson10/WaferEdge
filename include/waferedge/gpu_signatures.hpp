@@ -1,7 +1,7 @@
 #pragma once
 
 // Spatial signatures for a batch of wafer maps on the GPU (built with the cuda preset only):
-// the feature counts and the Hough line, from one upload of the maps.
+// the feature counts, the Hough line and the cluster summary, from one upload of the maps.
 //
 // C++20 and free of CUDA headers: included by the .cu implementation (nvcc 12.4 compiles at
 // most C++20, ADR-0001) and by C++23 tests and benchmarks. CUDA state lives in Impl.
@@ -10,6 +10,7 @@
 // copy to the device, one kernel per requested signature (one block per map), one copy back,
 // one sync. On WSL2 each CUDA call costs ~20-90 us (docs/gpu.md), and moving the maps costs
 // more than computing on them, so every signature shares the one upload.
+#include "waferedge/clusters.hpp"
 #include "waferedge/features.hpp"
 #include "waferedge/geometry.hpp"
 #include "waferedge/hough.hpp"
@@ -40,6 +41,7 @@ struct RunTimings {
     float upload_ms = 0;   // host -> device copy of bins and descriptors
     float features_ms = 0; // feature kernel (0 if not requested)
     float hough_ms = 0;    // Hough kernel (0 if not requested)
+    float clusters_ms = 0; // cluster kernel (0 if not requested)
     float download_ms = 0; // device -> host copy of the results
 };
 
@@ -53,12 +55,14 @@ public:
     SignatureEngine& operator=(SignatureEngine&&) noexcept;
 
     // For each map i: features[i] (if features is not empty; needs geometries[i] with the
-    // map's shape) and lines[i], the strongest Hough line (if lines is not empty). Each
+    // map's shape), lines[i], the strongest Hough line (if lines is not empty), and
+    // clusters[i], the cluster count and largest cluster (if clusters is not empty). Each
     // output is either empty (not computed) or has one slot per map. Buffers grow to the
     // largest batch seen and are reused; geometry tables are uploaded once per Geometry
     // (cached by Geometry::id). Returns false on a CUDA error; error() says which.
     bool run(std::span<const WaferMapView> maps, std::span<const Geometry* const> geometries,
-             std::span<Features> features, std::span<HoughLine> lines);
+             std::span<Features> features, std::span<HoughLine> lines,
+             std::span<ClusterSummary> clusters = {});
 
     [[nodiscard]] const std::string& error() const noexcept;
     // Timings of the last run() if set_timing(true) was in effect, else zeros.

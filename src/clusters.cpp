@@ -105,6 +105,15 @@ const Cluster* ClusterFinder::largest() const noexcept {
     return best;
 }
 
+ClusterSummary ClusterFinder::summary() const noexcept {
+    ClusterSummary s;
+    s.clusters = static_cast<std::uint32_t>(clusters_.size());
+    if (const Cluster* big = largest()) {
+        s.largest = *big;
+    }
+    return s;
+}
+
 ClusterShape shape(const Cluster& c) noexcept {
     if (c.size == 0) {
         return {};

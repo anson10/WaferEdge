@@ -193,3 +193,14 @@ TEST_CASE("largest() picks the biggest cluster, the first one on ties") {
     finder.run(ascii({"xxoxx", "ooooo", "ooooo"}));
     CHECK(finder.largest() == &finder.clusters()[0]);
 }
+
+TEST_CASE("summary() is the cluster count and the largest cluster") {
+    ClusterFinder finder;
+    finder.run(synth::disc(20, 20));
+    CHECK(finder.summary() == ClusterSummary{}); // no fails: zero count, zero cluster
+    finder.run(ascii({"xxoxx", "ooooo", "xxxoo"}));
+    const auto s = finder.summary();
+    CHECK(s.clusters == 3);
+    CHECK(s.largest == finder.clusters()[2]);
+    CHECK(s.largest.size == 3);
+}

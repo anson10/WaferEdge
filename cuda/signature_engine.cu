@@ -31,7 +31,15 @@ std::size_t align16(std::size_t n) {
     return (n + 15) & ~std::size_t{15};
 }
 
-enum Event { kBeforeUpload, kAfterUpload, kAfterFeatures, kAfterHough, kAfterDownload, kEvents };
+enum Event {
+    kBeforeUpload,
+    kAfterUpload,
+    kAfterFeatures,
+    kAfterHough,
+    kAfterClusters,
+    kAfterDownload,
+    kEvents
+};
 
 } // namespace
 
@@ -45,11 +53,14 @@ struct SignatureEngine::Impl {
     std::size_t host_in_cap = 0;
     std::uint8_t* host_out = nullptr;
     std::size_t host_out_cap = 0;
-    // Device buffers, reused across runs. dev_out holds the features, then the lines.
+    // Device buffers, reused across runs. dev_out holds the features, the lines, then the
+    // cluster summaries; dev_scratch the union-find trees of maps too big for shared memory.
     std::uint8_t* dev_in = nullptr;
     std::size_t dev_in_cap = 0;
     std::uint8_t* dev_out = nullptr;
     std::size_t dev_out_cap = 0;
+    std::uint8_t* dev_scratch = nullptr;
+    std::size_t dev_scratch_cap = 0;
     // Geometry tables of every Geometry seen, back to back; offset by Geometry::id.
     std::uint8_t* dev_geometry = nullptr;
     std::size_t geometry_cap = 0;
@@ -160,6 +171,7 @@ SignatureEngine::~SignatureEngine() {
     cudaFreeHost(impl_->host_out);
     cudaFree(impl_->dev_in);
     cudaFree(impl_->dev_out);
+    cudaFree(impl_->dev_scratch);
     cudaFree(impl_->dev_geometry);
     for (auto& e : impl_->events) {
         cudaEventDestroy(e);
@@ -189,7 +201,7 @@ void SignatureEngine::set_timing(bool on) noexcept {
 
 bool SignatureEngine::run(std::span<const WaferMapView> maps,
                           std::span<const Geometry* const> geometries, std::span<Features> features,
-                          std::span<HoughLine> lines) {
+                          std::span<HoughLine> lines, std::span<ClusterSummary> clusters) {
     Impl& m = *impl_;
     if (!m.error.empty()) {
         return false; // a failed constructor, or an earlier error: the engine is unusable
@@ -197,7 +209,8 @@ bool SignatureEngine::run(std::span<const WaferMapView> maps,
     const std::size_t count = maps.size();
     const bool want_features = !features.empty();
     const bool want_lines = !lines.empty();
-    if (count == 0 || (!want_features && !want_lines)) {
+    const bool want_clusters = !clusters.empty();
+    if (count == 0 || (!want_features && !want_lines && !want_clusters)) {
         return true;
     }
     if (want_lines && !m.hough_tables) {
@@ -208,19 +221,26 @@ bool SignatureEngine::run(std::span<const WaferMapView> maps,
     }
 
     // Upload layout: descriptors, then each map's bins at a 16-byte aligned offset.
-    // Result layout: features (if requested), then lines (if requested), one download.
+    // Result layout: features, lines, clusters (each if requested), one download.
     const std::size_t desc_bytes = align16(count * sizeof(MapDesc));
     std::size_t bin_bytes = 0;
+    bool big_map = false;
     for (const auto& map : maps) {
         bin_bytes = align16(bin_bytes) + map.bins().size();
+        big_map = big_map || map.bins().size() > detail::kClusterSharedPositions;
     }
     const std::size_t in_bytes = desc_bytes + align16(bin_bytes);
     const std::size_t features_bytes = want_features ? align16(count * sizeof(Features)) : 0;
-    const std::size_t out_bytes = features_bytes + (want_lines ? count * sizeof(HoughLine) : 0);
+    const std::size_t lines_bytes = want_lines ? align16(count * sizeof(HoughLine)) : 0;
+    const std::size_t out_bytes =
+        features_bytes + lines_bytes + (want_clusters ? count * sizeof(ClusterSummary) : 0);
+    const bool need_scratch = want_clusters && big_map;
     if (!m.grow(m.host_in, m.host_in_cap, in_bytes, true) ||
         !m.grow(m.dev_in, m.dev_in_cap, in_bytes, false) ||
         !m.grow(m.host_out, m.host_out_cap, out_bytes, true) ||
-        !m.grow(m.dev_out, m.dev_out_cap, out_bytes, false)) {
+        !m.grow(m.dev_out, m.dev_out_cap, out_bytes, false) ||
+        (need_scratch &&
+         !m.grow(m.dev_scratch, m.dev_scratch_cap, 8 * align16(bin_bytes), false))) {
         return false;
     }
 
@@ -274,6 +294,16 @@ bool SignatureEngine::run(std::span<const WaferMapView> maps,
         return false;
     }
     m.record(kAfterHough);
+    if (want_clusters &&
+        !m.ok(detail::launch_clusters(
+                  grid, dev_descs, dev_bins,
+                  need_scratch ? reinterpret_cast<int*>(m.dev_scratch) : nullptr,
+                  reinterpret_cast<ClusterSummary*>(m.dev_out + features_bytes + lines_bytes),
+                  m.stream),
+              "cluster kernel launch")) {
+        return false;
+    }
+    m.record(kAfterClusters);
     if (!m.ok(cudaMemcpyAsync(m.host_out, m.dev_out, out_bytes, cudaMemcpyDeviceToHost, m.stream),
               "download")) {
         return false;
@@ -286,13 +316,18 @@ bool SignatureEngine::run(std::span<const WaferMapView> maps,
         m.timings.upload_ms = m.between(kBeforeUpload, kAfterUpload);
         m.timings.features_ms = m.between(kAfterUpload, kAfterFeatures);
         m.timings.hough_ms = m.between(kAfterFeatures, kAfterHough);
-        m.timings.download_ms = m.between(kAfterHough, kAfterDownload);
+        m.timings.clusters_ms = m.between(kAfterHough, kAfterClusters);
+        m.timings.download_ms = m.between(kAfterClusters, kAfterDownload);
     }
     if (want_features) {
         std::memcpy(features.data(), m.host_out, count * sizeof(Features));
     }
     if (want_lines) {
         std::memcpy(lines.data(), m.host_out + features_bytes, count * sizeof(HoughLine));
+    }
+    if (want_clusters) {
+        std::memcpy(clusters.data(), m.host_out + features_bytes + lines_bytes,
+                    count * sizeof(ClusterSummary));
     }
     return true;
 }
