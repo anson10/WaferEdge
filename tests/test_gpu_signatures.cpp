@@ -2,6 +2,7 @@
 // locally (ctest --preset cuda), not in CI.
 #include "support/synth.hpp"
 #include "waferedge/backend.hpp"
+#include "waferedge/clusters.hpp"
 #include "waferedge/gpu_signatures.hpp"
 #include "waferedge/hough.hpp"
 #include "waferedge/map_file.hpp"
@@ -334,4 +335,57 @@ TEST_CASE("GPU clusters of maps too big for shared memory use the global scratch
                                         synth::random_map(212, 204, 450, 3), snake(150)};
     SignatureEngine engine;
     check_clusters(engine, maps);
+}
+
+TEST_CASE("CUDA Graphs: replayed batches equal the CPU, the cache follows shapes and buffers") {
+    require_gpu();
+    SignatureEngine engine;
+    engine.set_graphs(true);
+    REQUIRE(engine.graphs());
+    HoughTransform hough;
+    ClusterFinder finder;
+
+    // Batches of different sizes and contents, each run twice (record, then replay), and
+    // sizes that make the buffers grow (new addresses: the old graphs must not be reused).
+    std::uint32_t seed = 900;
+    std::size_t graphs_before = 0;
+    for (const std::size_t size :
+         {std::size_t{1}, std::size_t{16}, std::size_t{16}, std::size_t{700}, std::size_t{16},
+          std::size_t{3000}, std::size_t{1}}) {
+        Batch batch;
+        for (std::size_t i = 0; i < size; ++i) {
+            batch.add(with_scratch(40, 40, 60 + static_cast<unsigned>(i % 200), seed++));
+        }
+        std::vector<WaferMapView> views(batch.maps.begin(), batch.maps.end());
+        for (int pass = 0; pass < 2; ++pass) {
+            std::vector<Features> f(size);
+            std::vector<HoughLine> l(size);
+            std::vector<ClusterSummary> c(size);
+            REQUIRE(engine.run(views, batch.per_map, f, l, c));
+            std::size_t differ = 0;
+            for (std::size_t i = 0; i < size; ++i) {
+                finder.run(batch.maps[i]);
+                differ += (f[i] == backend::Scalar::features(batch.maps[i], *batch.per_map[i]) &&
+                           l[i] == hough.run(batch.maps[i]) && c[i] == finder.summary())
+                              ? 0U
+                              : 1U;
+            }
+            INFO("batch of " << size << ", pass " << pass);
+            CHECK(differ == 0);
+        }
+        // Each new shape adds a graph; the second pass replays it.
+        CHECK(engine.cached_graphs() >= std::min<std::size_t>(graphs_before, 1));
+        graphs_before = engine.cached_graphs();
+    }
+    CHECK(engine.cached_graphs() > 0);
+    CHECK(engine.cached_graphs() <= 32);
+
+    // Timing needs events between the steps: it runs without the graph, same answers.
+    engine.set_timing(true);
+    Batch timed;
+    for (std::uint32_t i = 0; i < 8; ++i) {
+        timed.add(synth::random_map(30, 30, 100, i));
+    }
+    timed.check(engine);
+    CHECK(engine.last_timings().features_ms > 0);
 }

@@ -182,6 +182,8 @@ build/cuda/bench/bench-gpu --benchmark_filter='BM_(cpu_clusters|gpu_clusters|gpu
   --benchmark_repetitions=3 --benchmark_report_aggregates_only=true
 build/cuda/bench/bench-gpu --benchmark_filter='BM_cpu_(features|all_signatures)_threads/' \
   --benchmark_repetitions=3 --benchmark_report_aggregates_only=true    # the whole CPU
+build/cuda/bench/bench-gpu --benchmark_filter='BM_gpu_(all_signatures|all_signatures_graph)/' \
+  --benchmark_repetitions=3 --benchmark_report_aggregates_only=true    # CUDA Graphs
 nsys profile -t cuda -o small build/cuda/bench/bench-gpu \
   --benchmark_filter='BM_gpu_shared_atomics/4/' && nsys stats -r cuda_api_sum small.nsys-rep
 ```
@@ -365,7 +367,44 @@ takes 6 of 12.
 
 For features alone the whole CPU (5.4M maps/s) beats the GPU (1.6M) at every batch size.
 
+## CUDA Graphs: one call per batch
+
+Each batch made five driver calls (an upload, up to three kernel launches, a download) plus
+the sync, and on WSL2 each call costs ~30 µs of CPU time before the GPU even starts. A CUDA
+Graph records the sequence once and replays it with one `cudaGraphLaunch`.
+
+`SignatureEngine::set_graphs(true)`: the first batch of each shape runs under **stream
+capture** (between `cudaStreamBeginCapture` and `cudaStreamEndCapture` the copies and
+launches are recorded, not run); the graph is instantiated (validated and prepared once) and
+cached. A graph freezes sizes, launch dimensions and addresses, so the cache key holds the
+batch count, byte sizes, requested signatures, the feature kernel variant and every buffer
+address: a buffer that grows gets a new address and its old graphs stop matching. The cache
+is capped at 32 graphs. Timing mode runs without graphs (events go between the steps). Test:
+replays equal the CPU for all three signatures across new shapes, repeats, buffer growth and
+timing mode.
+
+`bench-gpu --benchmark_filter='BM_gpu_(all_signatures|all_signatures_graph)/'`, 40×40 maps:
+
+| All three signatures, batch | Individual calls | CUDA Graph |
+|---|---|---|
+| 1 | 195 µs | **110 µs** (−44%) |
+| 4 | 238 µs | **123 µs** |
+| 16 | 265 µs | **117 µs** (2.3×) |
+| 64 | 367 µs | **162 µs** |
+| 1,024 | 1.27 ms | 1.13 ms |
+| 65,536 | 78 ms | 78 ms |
+
+Clusters alone, batch 1: 163 → 99 µs. Large batches don't change: copying and computing
+dominate there. Nsight Systems, CPU time in CUDA API calls per batch of 16 (average over ~3,000
+batches): 3 launches × 29 µs + 2 copies × 28.5 µs ≈ 144 µs individually, against one
+`cudaGraphLaunch` of 63 µs; the sync's wait also fell (92 → 75 µs), since the driver submits
+the recorded batch at once.
+
+**With graphs the GPU passes the whole CPU from ~4 maps** (all three signatures: 32.6k maps/s
+against 30.7k), down from ~16; a single wafer is still faster on the CPU (71 µs vs 110 µs).
+
 ## Next in phase 2a
 
-- Streams overlapping the upload of one batch with the kernels of the previous; CUDA Graphs
-  for the per-batch call overhead; the Hough kernel's bank conflicts.
+- Overlap the CPU packing of batch n+1 with the GPU work of batch n (two pinned buffers, two
+  streams): packing is 63% of a large batch's time, the biggest remaining cost before the
+  zero-copy receive path of phase 4. The Hough kernel's bank conflicts.
