@@ -6,6 +6,7 @@
 // Timing is wall time on a steady clock over whole passes of the set (geometry tables and
 // buffers warmed up beforehand), repeated until at least a second has passed; maps/s is total
 // maps over total time.
+#include "waferedge/backend.hpp"
 #include "waferedge/clusters.hpp"
 #include "waferedge/features.hpp"
 #include "waferedge/hough.hpp"
@@ -138,8 +139,23 @@ int run(int argc, char** argv) {
                           median(s.line), median(s.z)));
     }
 
+    // Every backend must give the scalar counts, field for field, on every map.
+    if (backend::Avx2::available()) {
+        std::size_t differ = 0;
+        for (const auto& r : records) {
+            const auto& g = cache.get(r.map.rows(), r.map.cols());
+            differ +=
+                backend::Avx2::features(r.map, g) == backend::Scalar::features(r.map, g) ? 0U : 1U;
+        }
+        print(std::format("\navx2 features == scalar on {} of {} maps\n", records.size() - differ,
+                          records.size()));
+        if (differ != 0) {
+            return 1;
+        }
+    }
+
     // Throughput of each stage alone, over whole passes of the set.
-    print("\nscalar throughput, one stage at a time (whole passes, >= 1 s each):\n");
+    print("\nthroughput, one stage at a time, scalar unless named (whole passes, >= 1 s each):\n");
     const auto time_stage = [&](std::string_view name, auto&& stage) {
         using clock = std::chrono::steady_clock;
         std::uint64_t checksum = 0;
@@ -159,8 +175,14 @@ int run(int argc, char** argv) {
                           maps / seconds, seconds * 1e9 / maps, checksum / passes));
     };
     time_stage("features", [&](WaferMapView m) -> std::uint64_t {
-        return compute_features(m, cache.get(m.rows(), m.cols())).fails;
+        return backend::Scalar::features(m, cache.get(m.rows(), m.cols())).fails;
     });
+    if (backend::Avx2::available()) {
+        // Same checksum as the scalar line: the counts are identical.
+        time_stage("features avx2", [&](WaferMapView m) -> std::uint64_t {
+            return backend::Avx2::features(m, cache.get(m.rows(), m.cols())).fails;
+        });
+    }
     time_stage("clusters", [&](WaferMapView m) -> std::uint64_t {
         clusters.run(m);
         return clusters.clusters().size();

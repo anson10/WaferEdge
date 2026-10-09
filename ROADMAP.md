@@ -9,7 +9,8 @@ for advanced C++ (low-latency / HPC techniques), CUDA and ML inference, in the s
 domain. About 4–5 weeks for phases 0–5; phase 6 (a local LLM writing the incident note on the
 same engine) is a stretch goal.
 
-Every phase ends green in CI, with tests and at least one measured number.
+Every phase ends green in CI, with tests and at least one measured number. ADRs are numbered
+when written (docs/adr/); the roadmap names future ones by topic.
 
 ```
  Tool emulator ──HSMS/SECS-II (TCP)──► Edge host
@@ -65,8 +66,10 @@ The domain model and classical spatial analysis, scalar first (the reference), t
       (decision list as data, `explain()`, `config/rules.txt`; 'none' weighted to its natural share)
 - [x] Tests: hand-built maps per pattern; properties (rotation of a map rotates sectors,
       cluster labels partition the fail dies, empty / full / single-die maps)
-- [ ] AVX2 backend for the features; tested equal to scalar on random maps
-- [ ] Benchmark (Google Benchmark): maps/s scalar vs AVX2, by map size (24², 30², 40², 64²)
+- [x] AVX2 backend for the features; tested equal to scalar on random maps
+      (target attributes + run-time dispatch, ADR-0006; equal on all 103,698 real maps)
+- [x] Benchmark (Google Benchmark): maps/s scalar vs AVX2, by map size (24², 30², 40², 64²)
+      (3.2× / 3.7× / 4.0× / 5.4×; docs/avx2.md)
 - [x] **Evaluation**: on WaferLens's 24,090 sorted maps against `wafer_pattern_truth`, and on
       WM-811K's labelled lot-disjoint test set: per-pattern recall/precision, macro-F1, next to
       FabEye's CNN and a trivial baseline (yield threshold). Report where rules win and lose.
@@ -96,7 +99,7 @@ reference, profiled.
       threads), GPU, across batch sizes 1 … 65,536; **find the crossover batch size**
 - [ ] `docs/gpu.md`: what each kernel does, the profile, the crossover, and the latency vs
       throughput trade-off of batching
-- [ ] ADR-0006: GPU batching strategy (fixed batch, deadline-based, or adaptive)
+- [ ] ADR: GPU batching strategy (fixed batch, deadline-based, or adaptive)
 
 ## Phase 2b — Inference engine: FabEye's CNN on our own kernels (5–7 days)
 
@@ -130,7 +133,7 @@ facts (layers, preprocessing, calibration) are in docs/context.md.
 - [ ] The CNN as a third detector in the pipeline (phase 4) next to the rules; agreement / fusion
       of rule-based and CNN signals reported
 - [ ] `docs/inference.md` (the GEMM ladder table, quantisation results, coverage check)
-- [ ] ADR-0007: own kernels instead of TensorRT/ONNX Runtime (why: learning and control; what
+- [ ] ADR: own kernels instead of TensorRT/ONNX Runtime (why: learning and control; what
       it costs), and the int8 scheme
 
 ## Phase 3 — SECS-II codec and HSMS transport (4–5 days)
@@ -154,7 +157,7 @@ The equipment protocol, from the bytes up.
       time; corpus checked in; any crash becomes a regression test
 - [ ] Benchmark: messages/s decoded and encoded, allocation count per message (should be 0)
 - [ ] `docs/secs.md`: the subset implemented, message layouts used, what is out of scope
-- [ ] ADR-0008: zero-copy views and error handling; ADR-0009: Asio coroutines for HSMS
+- [ ] ADRs: zero-copy views and error handling; Asio coroutines for HSMS
 
 ## Phase 4 — The edge pipeline (3–4 days)
 
@@ -176,7 +179,7 @@ Putting it together, closed loop, with honest tail latency.
       (maps/s) vs tail latency
 - [ ] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,
       against WaferLens's batch pattern alarm (median 52 h, mostly sort lag) and against no hold
-- [ ] `docs/pipeline.md` and ADR-0010 (threading and queue design)
+- [ ] `docs/pipeline.md` and an ADR (threading and queue design)
 
 ## Phase 5 — Python bindings and launch (2–3 days)
 

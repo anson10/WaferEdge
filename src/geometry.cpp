@@ -1,7 +1,9 @@
 #include "waferedge/geometry.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
+#include <utility>
 
 namespace waferedge {
 
@@ -85,6 +87,23 @@ Geometry::Geometry(int rows, int cols)
             rings_[i] = static_cast<std::uint8_t>(ring_of(r, c, rows, cols));
         }
     }
+}
+
+Geometry Geometry::from_tables(int rows, int cols, std::vector<std::uint8_t> zones,
+                               std::vector<std::uint8_t> sectors, std::vector<std::uint8_t> rings) {
+    const auto n = static_cast<std::size_t>(rows) * static_cast<std::size_t>(cols);
+    assert(zones.size() == n && sectors.size() == n && rings.size() == n);
+    assert(std::ranges::all_of(zones, [](auto z) { return z < kZones; }));
+    assert(std::ranges::all_of(sectors, [](auto s) { return s < kSectors; }));
+    assert(std::ranges::all_of(rings, [](auto k) { return k < kRings; }));
+    (void)n;
+    Geometry g;
+    g.rows_ = rows;
+    g.cols_ = cols;
+    g.zones_ = std::move(zones);
+    g.sectors_ = std::move(sectors);
+    g.rings_ = std::move(rings);
+    return g;
 }
 
 const Geometry& GeometryCache::get(int rows, int cols) {
