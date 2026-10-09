@@ -9,8 +9,10 @@ What runs on the GPU, how it is checked, and what it costs, measured. The short 
   core **from a batch of 4 maps**, and reaches **~1.2M maps/s, ~84× one core** (26–33× on
   the real datasets end to end). Equal to the CPU's line on all 103,698 real maps.
 - **Clusters** (lock-free union-find): passes one core at ~64 maps, ~1.3M maps/s (~12×).
-- **All three from one upload**: ~0.82M maps/s, **~66× one CPU core** doing the same work
-  (~80 µs a map), ahead from a batch of ~4 maps.
+- **All three from one upload**: ~0.82M maps/s, ~66× one CPU core, and **~9.4× the whole
+  CPU** (6 cores, 12 threads: ~87k maps/s), ahead of the whole CPU from **~16 maps** a batch.
+- **Where things run** follows from that (ADR-0007): features on the CPU always (the whole
+  CPU does 5.4M maps/s, the GPU never wins), Hough and clusters on the GPU from 16 maps.
 
 Machine: RTX 3050 6 GB Laptop (sm_86, 20 SMs), driver / runtime 12.4, WSL2; Ryzen 5 7535HS.
 
@@ -178,6 +180,8 @@ ncu --set full --kernel-name regex:hough --launch-skip 1 --launch-count 1 -o hou
 ncu -i hough.ncu-rep | less                           # the profile, as text (or ncu-ui)
 build/cuda/bench/bench-gpu --benchmark_filter='BM_(cpu_clusters|gpu_clusters|gpu_all_signatures)/' \
   --benchmark_repetitions=3 --benchmark_report_aggregates_only=true
+build/cuda/bench/bench-gpu --benchmark_filter='BM_cpu_(features|all_signatures)_threads/' \
+  --benchmark_repetitions=3 --benchmark_report_aggregates_only=true    # the whole CPU
 nsys profile -t cuda -o small build/cuda/bench/bench-gpu \
   --benchmark_filter='BM_gpu_shared_atomics/4/' && nsys stats -r cuda_api_sum small.nsys-rep
 ```
@@ -310,8 +314,58 @@ One CPU core needs ~80 µs per map for all three (AVX2 features ~1 µs, Hough ~6
 batches. Real data, batches of 4,096, all copies included: WaferLens 482k maps/s, WM-811K
 247k (`waferedge-maps`, which also checks every map against the CPU).
 
+## The whole CPU, and the cost of waking threads
+
+`ThreadPool` (`include/waferedge/thread_pool.hpp`): threads start once; a job hands out
+chunks from an atomic counter (fast threads take more chunks: maps don't all cost the same);
+per-thread Hough and cluster scratch, so no locks in the loop. Tested for every item exactly
+once at sizes 0 … 100,003 and 1 … 12 threads, stable worker ids, 3,000 jobs back to back; the
+pool tests run clean under ThreadSanitizer. (The first version broke its own contract with a
+one-thread pool, calling the function with all n items instead of chunks of at most `grain`;
+the exactly-once test caught it.)
+
+`bench-gpu --benchmark_filter=BM_cpu_` (40×40 maps, median of 3, large batches):
+
+| | 1 thread | 6 threads | 12 threads |
+|---|---|---|---|
+| Features (AVX2) | 0.93M maps/s | 4.2M (4.6×) | 5.4M (5.9×) |
+| All three signatures | 13.3k | 61k (4.6×) | 91k (6.9×) |
+
+The second hardware thread per core adds 28% for features and 50% for all three (Hough's
+dependent arithmetic leaves gaps the sibling thread fills).
+
+**Small batches: waking threads is the cost.** With workers asleep on a condition variable,
+a batch of 4 maps took 248 µs on 6 threads and 458 µs on 12, against 4.4 µs on one thread:
+waking a thread through the kernel (a futex, the scheduler, the core leaving an idle state)
+costs ~100–200 µs under WSL2, the same order as a GPU call. **Spinning before sleeping**
+(polling an atomic with the `pause` hint for up to 200 µs; release / acquire ordering hands
+the job over, the mutex still guards the sleepers so no wake-up is lost):
+
+| Features, 6 threads | Sleeping workers | Spinning workers |
+|---|---|---|
+| batch 4 | 248 µs | **5.6 µs** |
+| batch 64 | 246 µs | **23 µs** |
+| batch 1,024 | 448 µs | 290 µs |
+
+But **spinning on all 12 hardware threads backfires**: a batch of 4 still took 238 µs. With
+every logical CPU spinning, anything else on the machine preempts a spinner and the caller
+waits for it. Low-latency systems spin on fewer threads than CPUs, often pinned; ADR-0007
+takes 6 of 12.
+
+### GPU vs the whole CPU, all three signatures
+
+| Batch | Best CPU (6 or 12 threads, spinning) | GPU | |
+|---|---|---|---|
+| 1 | 14.1k maps/s (71 µs) | 5.1k (198 µs) | CPU 2.8× |
+| 4 | 30.7k | 15.8k | CPU 1.9× |
+| 16 | 48.9k | 56.3k | GPU: crossover |
+| 64 | 71.6k | 185k | GPU 2.6× |
+| 1,024 | 80.9k | 807k | GPU 10× |
+| 16,384 | 86.9k | 819k | GPU 9.4× |
+
+For features alone the whole CPU (5.4M maps/s) beats the GPU (1.6M) at every batch size.
+
 ## Next in phase 2a
 
-- CPU on all cores in the crossover benchmarks.
 - Streams overlapping the upload of one batch with the kernels of the previous; CUDA Graphs
   for the per-batch call overhead; the Hough kernel's bank conflicts.
