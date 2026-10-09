@@ -28,6 +28,8 @@ if(WAFEREDGE_CUDA)
   target_sources(waferedge PRIVATE
     gpu_info.cpp
     ${PROJECT_SOURCE_DIR}/cuda/cluster_kernel.cu
+    ${PROJECT_SOURCE_DIR}/cuda/cnn_engine.cu
+    ${PROJECT_SOURCE_DIR}/cuda/cnn_kernels.cu
     ${PROJECT_SOURCE_DIR}/cuda/feature_kernels.cu
     ${PROJECT_SOURCE_DIR}/cuda/gemm.cu
     ${PROJECT_SOURCE_DIR}/cuda/hough_kernel.cu

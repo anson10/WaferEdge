@@ -15,6 +15,11 @@ if(WAFEREDGE_CUDA)
   target_link_libraries(bench-gemm PRIVATE waferedge waferedge_options CUDA::cublas CUDA::cublasLt
                         benchmark::benchmark)
 
+  add_executable(bench-cnn bench_cnn.cpp)
+  target_link_libraries(bench-cnn PRIVATE waferedge waferedge_synth waferedge_options
+                        benchmark::benchmark)
+  target_compile_definitions(bench-cnn PRIVATE WAFEREDGE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+
   add_executable(bench-transfer bench_transfer.cpp)
   target_link_libraries(bench-transfer PRIVATE waferedge waferedge_options CUDA::cudart
                         benchmark::benchmark)

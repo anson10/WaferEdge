@@ -26,7 +26,7 @@ catch_discover_tests(waferedge-tests)
 
 # GPU tests run locally only (CI has no GPU); `ctest -L gpu` selects them.
 if(WAFEREDGE_CUDA)
-  add_executable(waferedge-gpu-tests test_gpu.cpp test_gpu_gemm.cpp test_gpu_signatures.cpp
+  add_executable(waferedge-gpu-tests test_gpu.cpp test_gpu_cnn.cpp test_gpu_gemm.cpp test_gpu_signatures.cpp
                                     gpu/iota_kernel.cu)
   target_link_libraries(waferedge-gpu-tests
     PRIVATE waferedge waferedge_synth waferedge_options CUDA::cudart Catch2::Catch2WithMain)
