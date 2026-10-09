@@ -34,8 +34,8 @@ whole CPU at large batches; replayed as CUDA Graphs, the GPU passes the whole CP
 a batch ([docs/gpu.md](docs/gpu.md), ADR-0007). Phase 2b (the inference engine) has started: FabEye's
 CNN runs on WaferEdge's own GEMM ladder and implicit-GEMM convolutions on the GPU (fp32, fp16
 and int8 tensor cores), with FabEye's macro-F1 and conformal coverage in every precision,
-~11,000 (fp16) to ~13,000 (int8) maps/s, and under 1 ms for a single map
-([docs/inference.md](docs/inference.md)).
+~11,000 (fp16) to ~13,000 (int8) maps/s, and ~0.45 ms for a single map in int8 with the
+forward pass replayed as a CUDA Graph ([docs/inference.md](docs/inference.md)).
 
 ## Build
 

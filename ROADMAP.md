@@ -135,8 +135,10 @@ facts (layers, preprocessing, calibration) are in docs/context.md.
       maps (never the test set), int8 tensor-core GEMM
 - [x] Convolution gather rewritten from the profile (K tap-major, block order, per-warp
       epilogue, conflict-free staging): conv cycles −74% fp16, −70% int8; 2.4× end to end
-- [ ] Batching with streams and pinned memory (shared with phase 2a); CUDA Graphs for a fixed
-      batch shape
+- [x] CUDA Graphs for a fixed batch shape (upload outside the graph, so map sizes may vary):
+      one int8 map 0.50–0.54 → 0.44–0.45 ms, −12 to −19% up to 64 maps; pinned host buffers
+- [x] Streams measured, not added: copies are 4.8% of a forward at one map, 0.4% at 256; the
+      CPU-side overlap (pack the next wafer while the GPU runs) moves to the phase-4 pipeline
 - [x] **Accuracy must survive**: fp32 / fp16 / int8 macro-F1 on FabEye's lot-disjoint test set,
       and **conformal coverage** with FabEye's calibration (90% sets still cover ≈ 90%; the
       selective-accept rule at 0.688 still keeps error ≈ 2%). If int8 breaks coverage, report it

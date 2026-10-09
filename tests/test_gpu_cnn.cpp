@@ -236,3 +236,51 @@ TEST_CASE("int8 logits stay close to the CPU reference; int8 without scales refu
     CHECK_FALSE(unscaled.run({&one, 1}, logits));
     CHECK(unscaled.error().find("calibrated") != std::string::npos);
 }
+
+TEST_CASE("CUDA Graphs replay the same logits; map sizes may change, the image count may not") {
+    require_gpu();
+    const auto model = random_model(7);
+    std::vector<WaferMap> a;
+    std::vector<WaferMap> b; // same count, other (larger) sizes: the graph is reused
+    for (std::uint32_t i = 0; i < 6; ++i) {
+        a.push_back(synth::random_map(30 + static_cast<int>(i), 40, 200, i));
+        b.push_back(
+            synth::random_map(150 - static_cast<int>(i), 20 + static_cast<int>(i), 300, i + 50));
+    }
+    for (const auto precision : {CnnPrecision::fp32, CnnPrecision::fp16}) {
+        INFO("precision " << static_cast<int>(precision));
+        CnnEngine direct(model, precision);
+        CnnEngine graphed(model, precision);
+        graphed.set_graphs(true);
+        CHECK(graphed.graphs());
+        const auto want_a = gpu_logits(direct, a);
+        const auto want_b = gpu_logits(direct, b);
+        // b first: its bigger maps size the upload buffer. (A buffer that grows moves, and
+        // the graphs recorded with the old address stop matching: a new one is recorded.)
+        CHECK(gpu_logits(graphed, b) == want_b); // recorded
+        CHECK(graphed.cached_graphs() == 1);
+        CHECK(gpu_logits(graphed, b) == want_b); // replayed
+        CHECK(gpu_logits(graphed, a) == want_a); // replayed with other map sizes
+        CHECK(graphed.cached_graphs() == 1);
+        CHECK(gpu_logits(graphed, {a[0]}) == gpu_logits(direct, {a[0]})); // a new count
+        CHECK(graphed.cached_graphs() == 2);
+        graphed.set_timing(true); // timing runs launch directly, the cache is untouched
+        CHECK(gpu_logits(graphed, a) == want_a);
+        CHECK(graphed.cached_graphs() == 2);
+    }
+    // int8 and calibration through a graphed fp32 engine.
+    CnnEngine fp32(model, CnnPrecision::fp32);
+    fp32.set_graphs(true);
+    gpu::ActivationMax scales{};
+    REQUIRE(fp32.activation_max(std::vector<WaferMapView>(a.begin(), a.end()), scales));
+    CnnEngine fp32_direct(model, CnnPrecision::fp32);
+    gpu::ActivationMax direct_scales{};
+    REQUIRE(
+        fp32_direct.activation_max(std::vector<WaferMapView>(a.begin(), a.end()), direct_scales));
+    CHECK(scales == direct_scales); // same kernels, same order: bit for bit
+    CnnEngine int8_direct(model, CnnPrecision::int8, &scales);
+    CnnEngine int8_graphed(model, CnnPrecision::int8, &scales);
+    int8_graphed.set_graphs(true);
+    gpu_logits(int8_graphed, b); // record
+    CHECK(gpu_logits(int8_graphed, b) == gpu_logits(int8_direct, b));
+}

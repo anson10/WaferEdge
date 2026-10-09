@@ -64,8 +64,18 @@ public:
     // Bias + ReLU in the GEMM's epilogue (default) or as a separate kernel per conv: the
     // before / after of fusion (fp32 and fp16; int8 is always fused, its epilogue requantises).
     void set_fused(bool on) noexcept;
+    // Timing runs without CUDA Graphs (events are recorded between the kernels).
     void set_timing(bool on) noexcept;
     [[nodiscard]] CnnTimings last_timings() const noexcept;
+
+    // CUDA Graphs: the first chunk of each shape (image count, fused, calibration, buffers) is
+    // recorded once, from preprocessing to the logits' download; later chunks of that shape
+    // replay it with one cudaGraphLaunch instead of 14-20 launches and a copy. The upload
+    // stays outside the graph: its size depends on the maps' sizes, which the graph would
+    // otherwise have to match too (docs/inference.md).
+    void set_graphs(bool on) noexcept;
+    [[nodiscard]] bool graphs() const noexcept;
+    [[nodiscard]] std::size_t cached_graphs() const noexcept;
 
 private:
     struct Impl;

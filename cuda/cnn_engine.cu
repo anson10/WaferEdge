@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -119,6 +120,21 @@ struct CnnEngine::Impl {
     unsigned* dev_max = nullptr;
     bool collect_max = false;
 
+    // CUDA Graphs: one executable graph per chunk shape, replayed with one launch.
+    using GraphKey = std::array<std::uintptr_t, 9>;
+    static constexpr std::size_t kMaxGraphs = 32; // then start over: bounded memory
+    bool graphs = false;
+    std::map<GraphKey, cudaGraphExec_t> graph_cache;
+
+    void clear_graphs() {
+        for (auto& [key, exec] : graph_cache) {
+            cudaGraphExecDestroy(exec);
+        }
+        graph_cache.clear();
+    }
+
+    bool enqueue(unsigned images, std::size_t desc_bytes, std::size_t& ev);
+
     std::size_t elem() const {
         return precision == CnnPrecision::fp32 ? 4 : (precision == CnnPrecision::fp16 ? 2 : 1);
     }
@@ -208,6 +224,7 @@ CnnEngine::~CnnEngine() {
         return;
     }
     Impl& m = *impl_;
+    m.clear_graphs();
     for (std::size_t l = 0; l < cnn::kConvLayers; ++l) {
         cudaFree(m.weight[l]);
         cudaFree(m.bias[l]);
@@ -275,21 +292,25 @@ void CnnEngine::set_timing(bool on) noexcept {
 CnnTimings CnnEngine::last_timings() const noexcept {
     return impl_->timings;
 }
+void CnnEngine::set_graphs(bool on) noexcept {
+    impl_->graphs = on;
+}
+bool CnnEngine::graphs() const noexcept {
+    return impl_->graphs;
+}
+std::size_t CnnEngine::cached_graphs() const noexcept {
+    return impl_->graph_cache.size();
+}
 
-bool CnnEngine::Impl::forward(unsigned images, std::size_t in_bytes, std::size_t desc_bytes,
-                              float* logits_out) {
-    std::size_t ev = 0;
+// Everything after the upload, from preprocessing to the logits' download: what a graph
+// records. `ev` counts the timing marks (events only when timing, which never records).
+bool CnnEngine::Impl::enqueue(unsigned images, std::size_t desc_bytes, std::size_t& ev) {
     const auto mark = [&] {
         if (timing) {
             cudaEventRecord(events[ev], stream);
         }
         ++ev;
     };
-    mark();
-    if (!ok(cudaMemcpyAsync(dev_in, host_in, in_bytes, cudaMemcpyHostToDevice, stream), "upload")) {
-        return false;
-    }
-    mark();
     const auto* descs = reinterpret_cast<const MapDesc*>(dev_in);
     const std::uint8_t* bins = dev_in + desc_bytes;
     const int n = static_cast<int>(images);
@@ -404,6 +425,71 @@ bool CnnEngine::Impl::forward(unsigned images, std::size_t in_bytes, std::size_t
         return false;
     }
     mark();
+    return true;
+}
+
+bool CnnEngine::Impl::forward(unsigned images, std::size_t in_bytes, std::size_t desc_bytes,
+                              float* logits_out) {
+    std::size_t ev = 0;
+    if (timing) {
+        cudaEventRecord(events[ev], stream);
+    }
+    ++ev;
+    if (!ok(cudaMemcpyAsync(dev_in, host_in, in_bytes, cudaMemcpyHostToDevice, stream), "upload")) {
+        return false;
+    }
+    if (timing) {
+        cudaEventRecord(events[ev], stream);
+    }
+    ++ev;
+    if (graphs && !timing) {
+        // Everything the graph freezes: the image count (grid sizes, kernel arguments), the
+        // variant, and every buffer address. A buffer that grew has a new address, so its old
+        // graphs stop matching; the map sizes are read by preprocessing from the descriptors
+        // in device memory, so they don't need to match.
+        const GraphKey key = {
+            images,
+            (fused ? 1U : 0U) | (collect_max ? 2U : 0U),
+            desc_bytes,
+            reinterpret_cast<std::uintptr_t>(dev_in),
+            reinterpret_cast<std::uintptr_t>(act[0]),
+            reinterpret_cast<std::uintptr_t>(act[1]),
+            reinterpret_cast<std::uintptr_t>(dev_logits),
+            reinterpret_cast<std::uintptr_t>(host_logits),
+            reinterpret_cast<std::uintptr_t>(dev_max),
+        };
+        auto it = graph_cache.find(key);
+        if (it == graph_cache.end()) {
+            if (graph_cache.size() >= kMaxGraphs) {
+                clear_graphs();
+            }
+            // Record instead of run: between Begin and EndCapture the stream collects the
+            // launches and the copy into a graph, instantiated once (as in SignatureEngine).
+            if (!ok(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal),
+                    "begin capture")) {
+                return false;
+            }
+            const bool recorded = enqueue(images, desc_bytes, ev);
+            cudaGraph_t graph = nullptr;
+            const cudaError_t ended = cudaStreamEndCapture(stream, &graph);
+            if (!recorded || !ok(ended, "end capture")) {
+                cudaGraphDestroy(graph);
+                return false;
+            }
+            cudaGraphExec_t exec = nullptr;
+            const cudaError_t made = cudaGraphInstantiate(&exec, graph, 0);
+            cudaGraphDestroy(graph); // the executable graph keeps what it needs
+            if (!ok(made, "instantiate graph")) {
+                return false;
+            }
+            it = graph_cache.emplace(key, exec).first;
+        }
+        if (!ok(cudaGraphLaunch(it->second, stream), "graph launch")) {
+            return false;
+        }
+    } else if (!enqueue(images, desc_bytes, ev)) {
+        return false;
+    }
     if (!ok(cudaStreamSynchronize(stream), "CNN kernels")) {
         return false;
     }
