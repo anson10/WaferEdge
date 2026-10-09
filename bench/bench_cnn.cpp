@@ -3,8 +3,9 @@
 //
 //   build/cuda/bench/bench-cnn --benchmark_repetitions=3 --benchmark_report_aggregates_only=true
 //
-// Needs data/fabeye_cnn.wcnn (tools/export_cnn.py). 40 x 40 random maps (10% fails): the
-// network's cost doesn't depend on the map, every map is resized to 64 x 64.
+// Needs data/fabeye_cnn.wcnn (tools/export_cnn.py) and, for int8, data/fabeye_int8_scales.txt
+// (waferedge-cnn calibrate). 40 x 40 random maps (10% fails): the network's cost doesn't
+// depend on the map, every map is resized to 64 x 64.
 #include "support/synth.hpp"
 #include "waferedge/backend.hpp"
 #include "waferedge/cnn.hpp"
@@ -13,7 +14,10 @@
 
 #include <benchmark/benchmark.h>
 
+#include <fstream>
 #include <optional>
+#include <sstream>
+#include <string>
 #include <vector>
 
 namespace {
@@ -28,9 +32,43 @@ const std::optional<cnn::Model>& model() {
     return m;
 }
 
+// int8 activation maxima from data/fabeye_int8_scales.txt ("layer max" lines).
+std::optional<gpu::ActivationMax> scales() {
+    std::ifstream in(WAFEREDGE_SOURCE_DIR "/data/fabeye_int8_scales.txt");
+    gpu::ActivationMax m{};
+    std::size_t found = 0;
+    for (std::string line; std::getline(in, line);) {
+        std::istringstream f(line);
+        std::size_t layer = 0;
+        float v = 0;
+        if (line[0] != '#' && f >> layer >> v && layer >= 1 && layer <= m.size()) {
+            m[layer - 1] = v;
+            ++found;
+        }
+    }
+    return found == m.size() ? std::optional(m) : std::nullopt;
+}
+
+// The benchmark's precision argument: 32, 16 or 8 bits.
+gpu::CnnPrecision precision_of(std::int64_t bits) {
+    switch (bits) {
+    case 16:
+        return gpu::CnnPrecision::fp16;
+    case 8:
+        return gpu::CnnPrecision::int8;
+    default:
+        return gpu::CnnPrecision::fp32;
+    }
+}
+
 void BM_cnn_gpu(benchmark::State& state) {
     const auto n = static_cast<std::size_t>(state.range(0));
-    const auto precision = state.range(1) == 16 ? gpu::CnnPrecision::fp16 : gpu::CnnPrecision::fp32;
+    const auto precision = precision_of(state.range(1));
+    const auto int8_scales = scales();
+    if (precision == gpu::CnnPrecision::int8 && !int8_scales) {
+        state.SkipWithError("needs data/fabeye_int8_scales.txt");
+        return;
+    }
     if (!backend::Cuda::available() || !model()) {
         state.SkipWithError("needs a CUDA device and data/fabeye_cnn.wcnn");
         return;
@@ -41,7 +79,7 @@ void BM_cnn_gpu(benchmark::State& state) {
     }
     const std::vector<WaferMapView> views(maps.begin(), maps.end());
     std::vector<float> logits(n * cnn::kClasses);
-    gpu::CnnEngine engine(*model(), precision);
+    gpu::CnnEngine engine(*model(), precision, int8_scales ? &*int8_scales : nullptr);
     engine.set_fused(state.range(2) != 0);
     if (!engine.run(views, logits)) { // warm-up: buffers
         state.SkipWithError(engine.error().c_str());
@@ -55,11 +93,13 @@ void BM_cnn_gpu(benchmark::State& state) {
 }
 
 void batches(benchmark::internal::Benchmark* b) {
-    for (const std::int64_t precision : {32, 16}) {
+    for (const std::int64_t precision : {32, 16, 8}) {
         for (const std::int64_t n : {1, 4, 16, 64, 256, 1024, 4096}) {
             b->Args({n, precision, 1});
         }
-        b->Args({256, precision, 0}); // unfused, for the fusion comparison
+        if (precision != 8) {
+            b->Args({256, precision, 0}); // unfused, for the fusion comparison
+        }
     }
 }
 

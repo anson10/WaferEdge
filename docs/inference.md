@@ -87,6 +87,15 @@ cmake --workflow --preset release
 build/release/tools/waferedge-cnn verify data/fabeye_cnn.wcnn data/wm811k_lot.wmap data/fabeye_logits_wm811k.bin
 build/release/tools/waferedge-cnn verify data/fabeye_cnn.wcnn data/waferlens_demo.wmap data/fabeye_logits_waferlens.bin
 build/release/tools/waferedge-cnn eval data/fabeye_cnn.wcnn data/wm811k_lot.wmap test
+
+# GPU (cuda build): fp32 / fp16 / int8, conformal coverage, agreement
+cmake --workflow --preset cuda
+build/cuda/tools/waferedge-cnn calibrate data/fabeye_cnn.wcnn data/wm811k_lot.wmap data/fabeye_int8_scales.txt
+I8="--gpu int8 --scales data/fabeye_int8_scales.txt"
+build/cuda/tools/waferedge-cnn eval data/fabeye_cnn.wcnn data/wm811k_lot.wmap test $I8
+build/cuda/tools/waferedge-cnn conformal data/fabeye_cnn.wcnn data/wm811k_lot.wmap data/fabeye_conformal.txt test $I8
+build/cuda/tools/waferedge-cnn agree data/fabeye_cnn.wcnn data/wm811k_lot.wmap all $I8
+build/cuda/bench/bench-cnn --benchmark_repetitions=3 --benchmark_report_aggregates_only=true
 ```
 
 ## The GEMM ladder
@@ -169,7 +178,7 @@ raw bins up, logits down.
   pixels) and the one-hot encoding.
 - **fp32**: an implicit-GEMM kernel in the register-blocked style (64×64 tiles, 4×4 per
   thread). **fp16**: the WMMA rung with the gather, fp16 weights (K padded to a multiple of 32)
-  and activations, fp32 accumulation, an epilogue through shared memory.
+  and activations, fp32 accumulation, an epilogue through shared memory. **int8**: below.
 - Then 2×2 max pooling, and average pooling + the linear layer (one block per image).
 
 **Correctness** (`tests/test_gpu_cnn.cpp`, a random model so no FabEye data is needed): GPU fp32
@@ -186,7 +195,7 @@ for bit in fp32; batches across the 1,024-map chunk boundary equal single-map ru
 
 Over every map, fp16 against fp32: **2 of 79,608 WM-811K maps change class** (0.0025%, near-ties;
 none in the test split), **0 of 24,090 WaferLens maps**; largest logit change 8.1e-3. Conformal
-coverage is checked with the int8 step.
+coverage: below.
 
 ### Speed
 
@@ -241,7 +250,82 @@ case for the yardsticks). Maps/s, median of 3 (wall clock; this GPU's clock drif
   are `wait` (the gather's divide / modulo) and `long_scoreboard` (the gathered loads). The
   cost of implicit GEMM is the gather, not the multiply.
 
+## Conformal prediction: the stricter check
+
+FabEye doesn't only predict a class: it returns a **prediction set** that contains the true
+class with ~90% (or 95%) probability, and an **auto-accept** flag. Both are calibrated on
+validation lots against the fp32 model's probabilities (`~/FabEye/serving/calibration.json`):
+class k is in the set when `1 − p_k ≤ q_k` (one threshold per class), and a wafer is accepted
+without review when its top probability is ≥ 0.688. A lower precision can keep the top class
+and still shift probabilities enough to drop the true class from a set, so coverage is
+checked separately from accuracy.
+
+`waferedge-cnn conformal` mirrors FabEye's `describe()` (`src/cnn_conformal.cpp`; the
+calibration exported as plain numbers to `data/fabeye_conformal.txt`, its model hash checked).
+On our fp32 logits it **reproduces FabEye's published numbers to four decimals**, which
+validates both the evaluation and the engine:
+
+| WM-811K test, 25,875 maps | FabEye (published) | fp32 | fp16 | int8 |
+|---|---|---|---|---|
+| macro-F1 | 0.858 | 0.858 | 0.858 | 0.860 |
+| Coverage, 90% target | 0.8925 | 0.8925 | 0.8926 | **0.8951** |
+| Worst-class coverage, 90% | 0.8621 | 0.8621 | 0.8621 | 0.8621 |
+| Mean set size, 90% | | 0.931 | 0.931 | 0.933 |
+| Coverage, 95% target | 0.9467 | 0.9467 | 0.9467 | 0.9477 |
+| Worst-class coverage, 95% | 0.8750 | 0.8750 | 0.8750 | 0.8750 |
+| Auto-accepted | 96.17% | 96.17% | 96.17% | 96.22% |
+| Error among accepted | 1.86% | 1.86% | 1.86% | **1.79%** |
+
+**Coverage held in both reduced precisions**, the worst class didn't move, and the auto-accept
+rule still keeps its error under FabEye's 2% target. int8's +0.002 macro-F1 is noise (122
+changed predictions netting slightly positive), not an improvement: the claim is "unchanged".
+
+## int8
+
+Each number becomes an 8-bit integer and a scale, `x ≈ x_int · s`:
+
+- **Weights: symmetric per output channel**, `s_w[c] = max |W[c, :]| / 127` (each filter keeps
+  its own range).
+- **Activations: symmetric per layer**, `s_a = max activation / 127`, the maxima **calibrated on
+  2,048 validation maps, never test** (`waferedge-cnn calibrate`, from the fp32 engine with a
+  max-reduction after each convolution; written to `data/fabeye_int8_scales.txt`). After ReLU
+  activations are ≥ 0, so signed int8 uses 0…127: 7 bits. Unsigned activations would add a
+  bit; accuracy didn't call for it.
+- **Input**: the one-hot 0 / 1 is exactly 0 / 127 (`s = 1/127`): no rounding at the first layer.
+- **Kernel**: WMMA on `signed char` fragments, int32 accumulation (exact). Epilogue:
+  `y = acc · (s_w[c] · s_in) + bias → ReLU → round(y / s_out)` clamped to 0…127. int8 fragment
+  loads need 32-byte aligned addresses, which a 16-element step inside a 32-wide tile breaks:
+  the kernel steps K by 16 and stores the patch tile transposed (read as a column-major
+  fragment) so every fragment starts aligned. The head dequantises the last block and runs in
+  float.
+
+**Agreement over every map** (`waferedge-cnn agree --gpu int8`): **122 of 79,608 WM-811K maps
+(0.15%) and 5 of 24,090 WaferLens maps change class** against fp32 (fp16: 2 and 0); largest
+logit change 0.32. Against ONNX Runtime: max |Δlogit| 0.21, same class on 998 of 1,000 test
+references and 500 of 500 WaferLens. Tests: the GPU calibration equals each layer's maximum
+computed on the CPU; int8 logits within 5% (relative) of the CPU reference on a random model
+(2.2% measured); an int8 engine without scales refuses.
+
+**Speed.** End to end (`bench-cnn`, same session): +16% over fp16 at batch 64–256 (e.g. 5,259
+vs 4,546 maps/s at 256), 1.02 vs 1.11 ms for one map. In cycles (Nsight Compute, batch 256):
+
+| | fp16 | int8 | |
+|---|---|---|---|
+| conv 2 | 16.5M cycles | 14.1M | −15% |
+| conv 4 | 9.8M cycles | 7.0M | −28% |
+| DRAM traffic, conv 4 | 67 MB | 33 MB | halved |
+| tensor pipe busy | ~10% | ~7% | |
+
+int8 doesn't approach 2× because the multiply was never the bottleneck: the kernels are bound
+by the implicit-GEMM gather (stalls on its integer arithmetic and scattered loads, tensor
+cores ~10% busy). int8 gains by moving half the bytes. A wall-clock per-layer comparison of
+fp16 and int8 run back to back came out 4× apart because the GPU throttled during the first
+run; the cycles above are the comparison to trust.
+
+TensorRT isn't installed on this machine (no Python package, no `trtexec`): not measured.
+
 ## Next
 
-Precomputed gather offsets and 32-row tiles for the 32-channel layers (the measured
-bottlenecks above), then int8 with the conformal-coverage check.
+The gather is the bottleneck of every precision: precomputed offsets for k → (channel, tap),
+32-row tiles for the 32-channel layers, vectorised patch loads. Then the CNN joins the
+pipeline (phase 4) as the third detector next to the rules.

@@ -1,6 +1,6 @@
 # ADR-0008: FabEye's CNN on our own kernels, checked against ONNX Runtime
 
-- **Status:** Accepted (the int8 scheme is added when phase 2b reaches it)
+- **Status:** Accepted (int8 scheme added the same day, below)
 - **Date:** 2026-10-09
 
 ## Context
@@ -37,6 +37,15 @@ Option 4, with the yardsticks used only to measure, never in the shipped path.
   a different source pixel at some lengths WM-811K has.
 - Floating-point results are compared with a stated tolerance (summation order differs between
   implementations), and the predicted class must agree on every map.
+
+- **int8 scheme**: symmetric int8 weights per output channel (`s = max|W[c,:]| / 127`) and
+  symmetric int8 activations per layer, scales from each layer's largest activation on 2,048
+  **validation** maps (never test), int32 accumulation on the tensor cores, requantisation in the
+  GEMM epilogue, the head in float. It is accepted only if accuracy **and FabEye's conformal
+  coverage** hold on the test split: they do (coverage 0.8951 at the 90% target vs fp32's
+  0.8925, worst class unchanged, auto-accept error 1.79% vs 1.86%; 0.15% of maps change class).
+  Per-layer max calibration is the simplest choice; percentile calibration or unsigned
+  activations were not needed and stay options if a future model loses coverage.
 
 ## Consequences
 - Every speed-up in the GEMM ladder, fusion and int8 is measured against cuBLAS / ONNX Runtime

@@ -131,19 +131,20 @@ facts (layers, preprocessing, calibration) are in docs/context.md.
 - [x] Convolution as **implicit GEMM** on top of it; **fused** conv + bias + ReLU (+ maxpool)
       kernels; layer timings before/after fusion (bias + ReLU fused: −11%; maxpool is 3% of the time,
       not fused; docs/inference.md)
-- [ ] **int8 quantisation**: per-channel weight scales, activation scales calibrated on held-out
+- [x] **int8 quantisation**: per-channel weight scales, activation scales calibrated on held-out
       maps (never the test set), int8 tensor-core GEMM
 - [ ] Batching with streams and pinned memory (shared with phase 2a); CUDA Graphs for a fixed
       batch shape
-- [ ] **Accuracy must survive**: fp32 / fp16 / int8 macro-F1 on FabEye's lot-disjoint test set,
+- [x] **Accuracy must survive**: fp32 / fp16 / int8 macro-F1 on FabEye's lot-disjoint test set,
       and **conformal coverage** with FabEye's calibration (90% sets still cover ≈ 90%; the
       selective-accept rule at 0.688 still keeps error ≈ 2%). If int8 breaks coverage, report it
-      and recalibrate, don't hide it
-- [ ] Benchmark: wafers/s and per-batch latency against ONNX Runtime CPU (FabEye's ~412/s) and
+      and recalibrate, don't hide it (coverage held: fp32 / fp16 / int8 0.8925 / 0.8926 / 0.8951 at 90%)
+- [x] Benchmark: wafers/s and per-batch latency against ONNX Runtime CPU (FabEye's ~412/s) and
       GPU, PyTorch, and TensorRT if installable; Nsight profile of the hottest kernel
+      (TensorRT not installed; ONNX Runtime CPU and PyTorch GPU measured on this machine)
 - [ ] The CNN as a third detector in the pipeline (phase 4) next to the rules; agreement / fusion
       of rule-based and CNN signals reported
-- [ ] `docs/inference.md` (the GEMM ladder table, quantisation results, coverage check)
+- [x] `docs/inference.md` (the GEMM ladder table, quantisation results, coverage check)
 - [x] ADR-0008: own kernels instead of TensorRT/ONNX Runtime (why: learning and control; what
       it costs), and the int8 scheme
 

@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -92,16 +93,32 @@ struct CnnEngine::Impl {
         return true;
     }
 
-    std::size_t elem() const { return precision == CnnPrecision::fp32 ? 4 : 2; }
+    // int8: per layer, scale[c] = weight scale of channel c * input activation scale, and
+    // 1 / output activation scale; the last layer's output scale for the head.
+    std::array<float*, cnn::kConvLayers> int8_scale{};
+    std::array<float, cnn::kConvLayers> int8_out_inv{};
+    float int8_head_scale = 1.0F;
+    // Calibration (fp32): running maxima of each conv's output, as float bit patterns.
+    unsigned* dev_max = nullptr;
+    bool collect_max = false;
+
+    std::size_t elem() const {
+        return precision == CnnPrecision::fp32 ? 4 : (precision == CnnPrecision::fp16 ? 2 : 1);
+    }
 
     // Runs one chunk of maps (<= kChunk), already packed in host_in.
     bool forward(unsigned images, std::size_t in_bytes, std::size_t desc_bytes, float* logits_out);
 };
 
-CnnEngine::CnnEngine(const cnn::Model& model, CnnPrecision precision)
+CnnEngine::CnnEngine(const cnn::Model& model, CnnPrecision precision,
+                     const ActivationMax* activation_max)
     : impl_(std::make_unique<Impl>()) {
     Impl& m = *impl_;
     m.precision = precision;
+    if (precision == CnnPrecision::int8 && activation_max == nullptr) {
+        m.error = "int8 needs calibrated activation maxima";
+        return;
+    }
     m.ok(cudaStreamCreate(&m.stream), "cudaStreamCreate");
     // One event per mark in forward(): before the upload, after it, after preprocessing, after
     // each of the 8 convolutions and 4 pools, after the head and after the download.
@@ -118,6 +135,36 @@ CnnEngine::CnnEngine(const cnn::Model& model, CnnPrecision precision)
             float* w = nullptr;
             m.upload(w, c.weight.data(), c.weight.size());
             m.weight[l] = w;
+        } else if (precision == CnnPrecision::int8) {
+            // Symmetric per output channel: w = w_int * s_w[c], s_w[c] = max |w[c, :]| / 127.
+            // Activations per layer: x = x_int * s_a, s_a = calibrated max / 127; the input's
+            // one-hot is 0 / 127 (s_a = 1 / 127).
+            const int k = c.in * 9;
+            const int kp = padded_k(c.in);
+            const float s_in = l == 0 ? 1.0F / 127.0F : (*activation_max)[l - 1] / 127.0F;
+            const float s_out = (*activation_max)[l] / 127.0F;
+            std::vector<signed char> w(static_cast<std::size_t>(c.out) * kp, 0);
+            std::vector<float> scale(static_cast<std::size_t>(c.out));
+            for (int o = 0; o < c.out; ++o) {
+                float top = 0.0F;
+                for (int i = 0; i < k; ++i) {
+                    top = std::max(top, std::abs(c.weight[static_cast<std::size_t>(o) * k + i]));
+                }
+                const float s_w = top > 0.0F ? top / 127.0F : 1.0F;
+                for (int i = 0; i < k; ++i) {
+                    const float q =
+                        std::nearbyint(c.weight[static_cast<std::size_t>(o) * k + i] / s_w);
+                    w[static_cast<std::size_t>(o) * kp + i] =
+                        static_cast<signed char>(std::clamp(q, -127.0F, 127.0F));
+                }
+                scale[static_cast<std::size_t>(o)] = s_w * s_in;
+            }
+            signed char* dw = nullptr;
+            m.upload(dw, w.data(), w.size());
+            m.weight[l] = dw;
+            m.upload(m.int8_scale[l], scale.data(), scale.size());
+            m.int8_out_inv[l] = s_out > 0.0F ? 1.0F / s_out : 0.0F;
+            m.int8_head_scale = s_out;
         } else {
             // fp16, each row padded with zeros from in * 9 to a multiple of 32.
             const int k = c.in * 9;
@@ -146,7 +193,9 @@ CnnEngine::~CnnEngine() {
     for (std::size_t l = 0; l < cnn::kConvLayers; ++l) {
         cudaFree(m.weight[l]);
         cudaFree(m.bias[l]);
+        cudaFree(m.int8_scale[l]);
     }
+    cudaFree(m.dev_max);
     cudaFree(m.fc_weight);
     cudaFree(m.fc_bias);
     cudaFreeHost(m.host_in);
@@ -163,6 +212,35 @@ CnnEngine::~CnnEngine() {
 
 CnnEngine::CnnEngine(CnnEngine&&) noexcept = default;
 CnnEngine& CnnEngine::operator=(CnnEngine&&) noexcept = default;
+
+bool CnnEngine::activation_max(std::span<const WaferMapView> maps, ActivationMax& out) {
+    Impl& m = *impl_;
+    if (m.precision != CnnPrecision::fp32) {
+        m.error = "activation_max needs the fp32 engine";
+        return false;
+    }
+    if (m.dev_max == nullptr &&
+        !m.ok(cudaMalloc(reinterpret_cast<void**>(&m.dev_max), cnn::kConvLayers * sizeof(unsigned)),
+              "cudaMalloc")) {
+        return false;
+    }
+    if (!m.ok(cudaMemset(m.dev_max, 0, cnn::kConvLayers * sizeof(unsigned)), "cudaMemset")) {
+        return false;
+    }
+    std::vector<float> logits(maps.size() * cnn::kClasses);
+    m.collect_max = true;
+    const bool done = run(maps, logits);
+    m.collect_max = false;
+    std::array<unsigned, cnn::kConvLayers> bits{};
+    if (!done || !m.ok(cudaMemcpy(bits.data(), m.dev_max, sizeof bits, cudaMemcpyDeviceToHost),
+                       "download maxima")) {
+        return false;
+    }
+    for (std::size_t l = 0; l < cnn::kConvLayers; ++l) {
+        std::memcpy(&out[l], &bits[l], sizeof(float));
+    }
+    return true;
+}
 
 const std::string& CnnEngine::error() const noexcept {
     return impl_->error;
@@ -196,12 +274,21 @@ bool CnnEngine::Impl::forward(unsigned images, std::size_t in_bytes, std::size_t
     mark();
     const auto* descs = reinterpret_cast<const MapDesc*>(dev_in);
     const std::uint8_t* bins = dev_in + desc_bytes;
-    const bool fp32 = precision == CnnPrecision::fp32;
     const int n = static_cast<int>(images);
-    cudaError_t e = fp32 ? cnn_detail::launch_preprocess(images, descs, bins,
-                                                         static_cast<float*>(act[0]), stream)
-                         : cnn_detail::launch_preprocess(images, descs, bins,
-                                                         static_cast<__half*>(act[0]), stream);
+    cudaError_t e = cudaSuccess;
+    switch (precision) {
+    case CnnPrecision::fp32:
+        e = cnn_detail::launch_preprocess(images, descs, bins, static_cast<float*>(act[0]), stream);
+        break;
+    case CnnPrecision::fp16:
+        e = cnn_detail::launch_preprocess(images, descs, bins, static_cast<__half*>(act[0]),
+                                          stream);
+        break;
+    case CnnPrecision::int8:
+        e = cnn_detail::launch_preprocess(images, descs, bins, static_cast<signed char*>(act[0]),
+                                          stream);
+        break;
+    }
     if (!ok(e, "preprocess")) {
         return false;
     }
@@ -211,7 +298,8 @@ bool CnnEngine::Impl::forward(unsigned images, std::size_t in_bytes, std::size_t
     for (int layer = 0; layer < cnn::kConvLayers; ++layer) {
         const auto l = static_cast<std::size_t>(layer);
         const ConvShape s{shape[l].in, shape[l].out, n, side};
-        if (fp32) {
+        switch (precision) {
+        case CnnPrecision::fp32:
             e = cnn_detail::launch_conv_fp32(s, static_cast<const float*>(weight[l]), bias[l],
                                              static_cast<const float*>(act[cur]),
                                              static_cast<float*>(act[1 - cur]), fused, stream);
@@ -219,7 +307,14 @@ bool CnnEngine::Impl::forward(unsigned images, std::size_t in_bytes, std::size_t
                 e = cnn_detail::launch_bias_relu(s, bias[l], static_cast<float*>(act[1 - cur]),
                                                  stream);
             }
-        } else {
+            if (e == cudaSuccess && collect_max) { // calibration: this layer's largest output
+                e = cnn_detail::launch_max(static_cast<const float*>(act[1 - cur]),
+                                           static_cast<std::size_t>(s.out_channels) * n * side *
+                                               side,
+                                           dev_max + l, stream);
+            }
+            break;
+        case CnnPrecision::fp16:
             e = cnn_detail::launch_conv_fp16(s, padded_k(shape[l].in),
                                              static_cast<const __half*>(weight[l]), bias[l],
                                              static_cast<const __half*>(act[cur]),
@@ -228,6 +323,13 @@ bool CnnEngine::Impl::forward(unsigned images, std::size_t in_bytes, std::size_t
                 e = cnn_detail::launch_bias_relu(s, bias[l], static_cast<__half*>(act[1 - cur]),
                                                  stream);
             }
+            break;
+        case CnnPrecision::int8:
+            e = cnn_detail::launch_conv_int8(
+                s, padded_k(shape[l].in), static_cast<const signed char*>(weight[l]), int8_scale[l],
+                bias[l], int8_out_inv[l], static_cast<const signed char*>(act[cur]),
+                static_cast<signed char*>(act[1 - cur]), stream);
+            break;
         }
         if (!ok(e, "conv")) {
             return false;
@@ -235,12 +337,23 @@ bool CnnEngine::Impl::forward(unsigned images, std::size_t in_bytes, std::size_t
         mark();
         cur = 1 - cur;
         if (layer % 2 == 1) { // end of a block: 2 x 2 max pooling
-            e = fp32 ? cnn_detail::launch_maxpool(s.out_channels, n, side,
-                                                  static_cast<const float*>(act[cur]),
-                                                  static_cast<float*>(act[1 - cur]), stream)
-                     : cnn_detail::launch_maxpool(s.out_channels, n, side,
-                                                  static_cast<const __half*>(act[cur]),
-                                                  static_cast<__half*>(act[1 - cur]), stream);
+            switch (precision) {
+            case CnnPrecision::fp32:
+                e = cnn_detail::launch_maxpool(s.out_channels, n, side,
+                                               static_cast<const float*>(act[cur]),
+                                               static_cast<float*>(act[1 - cur]), stream);
+                break;
+            case CnnPrecision::fp16:
+                e = cnn_detail::launch_maxpool(s.out_channels, n, side,
+                                               static_cast<const __half*>(act[cur]),
+                                               static_cast<__half*>(act[1 - cur]), stream);
+                break;
+            case CnnPrecision::int8:
+                e = cnn_detail::launch_maxpool(s.out_channels, n, side,
+                                               static_cast<const signed char*>(act[cur]),
+                                               static_cast<signed char*>(act[1 - cur]), stream);
+                break;
+            }
             if (!ok(e, "maxpool")) {
                 return false;
             }
@@ -249,10 +362,20 @@ bool CnnEngine::Impl::forward(unsigned images, std::size_t in_bytes, std::size_t
             side /= 2;
         }
     }
-    e = fp32 ? cnn_detail::launch_head(n, static_cast<const float*>(act[cur]), fc_weight, fc_bias,
-                                       dev_logits, stream)
-             : cnn_detail::launch_head(n, static_cast<const __half*>(act[cur]), fc_weight, fc_bias,
-                                       dev_logits, stream);
+    switch (precision) {
+    case CnnPrecision::fp32:
+        e = cnn_detail::launch_head(n, static_cast<const float*>(act[cur]), fc_weight, fc_bias,
+                                    dev_logits, stream);
+        break;
+    case CnnPrecision::fp16:
+        e = cnn_detail::launch_head(n, static_cast<const __half*>(act[cur]), fc_weight, fc_bias,
+                                    dev_logits, stream);
+        break;
+    case CnnPrecision::int8:
+        e = cnn_detail::launch_head(n, static_cast<const signed char*>(act[cur]), int8_head_scale,
+                                    fc_weight, fc_bias, dev_logits, stream);
+        break;
+    }
     if (!ok(e, "head")) {
         return false;
     }

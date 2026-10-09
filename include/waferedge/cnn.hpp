@@ -59,6 +59,44 @@ void conv3x3_relu(std::span<const float> in, int in_channels, int h, int w,
 // 2 x 2 max pooling, stride 2: channels x h x w -> channels x h/2 x w/2.
 void maxpool2(std::span<const float> in, int channels, int h, int w, std::span<float> out) noexcept;
 
+// FabEye's conformal calibration (tools/export_cnn.py -> data/fabeye_conformal.txt): per-class
+// thresholds q for alpha 0.1 and 0.05, and the confidence above which a wafer is accepted
+// without review. FabEye's own results on unseen lots come along, to compare against.
+struct Conformal {
+    std::array<std::uint8_t, 32> model_sha256{};
+    std::array<float, kClasses> thresholds_10{}; // 90% target coverage
+    std::array<float, kClasses> thresholds_05{}; // 95%
+    float accept_confidence = 0;
+    double reported_coverage_10 = 0;
+    double reported_worst_class_10 = 0;
+    double reported_coverage_05 = 0;
+    double reported_worst_class_05 = 0;
+    double reported_accept_rate = 0;
+    double reported_accept_error = 0;
+};
+
+[[nodiscard]] std::expected<Conformal, std::string>
+load_conformal(const std::filesystem::path& path);
+
+// The prediction set as a bitmask (bit k: class k), FabEye's rule: class k is in the set when
+// 1 - p_k <= q_k.
+[[nodiscard]] std::uint16_t prediction_set(std::span<const float> probabilities,
+                                           const std::array<float, kClasses>& thresholds) noexcept;
+
+struct ConformalMetrics {
+    double coverage = 0;             // true class in the set
+    double worst_class_coverage = 0; // the lowest coverage of any true class present
+    double mean_set_size = 0;
+    double accept_rate = 0;          // top probability >= the accept confidence
+    double error_among_accepted = 0; // top class wrong, among the accepted
+};
+
+// Logits of n maps (n * 9) against their true classes (maps with unknown truth are skipped).
+[[nodiscard]] ConformalMetrics evaluate_conformal(std::span<const float> logits,
+                                                  std::span<const Pattern> truth,
+                                                  const std::array<float, kClasses>& thresholds,
+                                                  float accept_confidence);
+
 // Probabilities from logits (numerically stable: the largest logit is subtracted first).
 [[nodiscard]] std::array<float, kClasses> softmax(std::span<const float> logits) noexcept;
 [[nodiscard]] Pattern predicted(std::span<const float> logits) noexcept;

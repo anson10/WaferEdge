@@ -26,7 +26,7 @@ __device__ int nearest_source(int i, int n) {
 
 template <typename T>
 __global__ void preprocess_kernel(const detail::MapDesc* descs, const std::uint8_t* bins,
-                                  int images, T* out) {
+                                  int images, T* out, T one) {
     const detail::MapDesc d = descs[blockIdx.x];
     const std::uint8_t* map = bins + d.bins;
     const int image = static_cast<int>(blockIdx.x);
@@ -41,7 +41,7 @@ __global__ void preprocess_kernel(const detail::MapDesc* descs, const std::uint8
         const std::size_t at =
             static_cast<std::size_t>(image) * kSide * kSide + static_cast<std::size_t>(i);
         for (int c = 0; c < kChannelsIn; ++c) {
-            out[c * plane + at] = static_cast<T>(c == channel ? 1.0F : 0.0F);
+            out[c * plane + at] = c == channel ? one : static_cast<T>(0.0F);
         }
     }
 }
@@ -287,8 +287,8 @@ __global__ void maxpool_kernel(int channels, int images, int side, const T* in, 
 // One block per image: 256 threads average one channel's 4 x 4 each, then 9 threads compute
 // the logits.
 template <typename T>
-__global__ void head_kernel(int images, const T* in, const float* fc_weight, const float* fc_bias,
-                            float* logits) {
+__global__ void head_kernel(int images, const T* in, float scale, const float* fc_weight,
+                            const float* fc_bias, float* logits) {
     constexpr int kFeatures = 256;
     __shared__ float pooled[kFeatures];
     const int image = static_cast<int>(blockIdx.x);
@@ -298,7 +298,7 @@ __global__ void head_kernel(int images, const T* in, const float* fc_weight, con
     for (int i = 0; i < 16; ++i) {
         sum += static_cast<float>(src[i]);
     }
-    pooled[c] = sum / 16.0F;
+    pooled[c] = sum * scale / 16.0F; // scale: int8 back to float (1 otherwise)
     __syncthreads();
     if (c < 9) {
         float z = fc_bias[c];
@@ -306,6 +306,106 @@ __global__ void head_kernel(int images, const T* in, const float* fc_weight, con
             z += fc_weight[c * kFeatures + f] * pooled[f];
         }
         logits[image * 9 + c] = z;
+    }
+}
+
+// ---- int8 convolution: tensor-core implicit GEMM ------------------------------------------------
+// Signed 8-bit weights and activations, int32 accumulation: the same structure as conv_fp16
+// with two differences forced by int8 fragments. Their loads need 32-byte aligned addresses,
+// and a 16-element step along K inside a 32-wide tile lands on a 16-byte boundary: so K steps
+// by 16 (one fragment deep), and the patch tile is stored transposed ([pixel][k], read as a
+// column-major fragment) so every fragment starts on an aligned row. The epilogue turns the
+// exact int32 sum back into a float (scale[c] = weight scale * input scale), adds the bias,
+// applies ReLU and requantises to 0..127 for the next layer.
+constexpr int kI8BK = 16;
+constexpr int kI8Pad = 16; // rows of 32 bytes
+
+__global__ void __launch_bounds__(kTcThreads)
+    conv_int8(ConvShape s, int padded_k, const signed char* weight, const float* scale,
+              const float* bias, float out_inv, const signed char* in, signed char* out) {
+    namespace wmma = nvcuda::wmma;
+    __shared__ alignas(32) signed char ws[kTcBM][kI8BK + kI8Pad];
+    __shared__ alignas(32) signed char ps[kTcBN][kI8BK + kI8Pad]; // transposed: ps[pixel][k]
+    __shared__ alignas(32) int cs[kTcBM][kTcBN + 4];
+    const int m_total = s.out_channels;
+    const int n_total = s.images * s.side * s.side;
+    const int k_total = s.in_channels * 9;
+    const int t = static_cast<int>(threadIdx.x);
+    const int warp = t / 32;
+    const int warp_m = (warp / 2) * 32;
+    const int warp_n = (warp % 2) * 32;
+    const int m0 = static_cast<int>(blockIdx.y) * kTcBM;
+    const int n0 = static_cast<int>(blockIdx.x) * kTcBN;
+    const int my_col = t % kTcBN; // this thread gathers pixel column my_col, k rows t/64 + 2 j
+    const int p = n0 + my_col;
+    const bool valid = p < n_total;
+    const Pixel px = decompose(valid ? p : 0, s.side);
+
+    wmma::fragment<wmma::accumulator, kWmma, kWmma, kWmma, int> acc[2][2];
+    for (auto& row : acc) {
+        for (auto& f : row) {
+            wmma::fill_fragment(f, 0);
+        }
+    }
+    for (int k0 = 0; k0 < padded_k; k0 += kI8BK) {
+        if (t < kTcBM) { // weights: 64 rows of 16 bytes, one uint4 each
+            const int m = m0 + t;
+            *reinterpret_cast<uint4*>(&ws[t][0]) =
+                m < m_total ? *reinterpret_cast<const uint4*>(&weight[m * padded_k + k0])
+                            : make_uint4(0, 0, 0, 0);
+        }
+        for (int kk = t / kTcBN; kk < kI8BK; kk += kTcThreads / kTcBN) {
+            const int k = k0 + kk;
+            ps[my_col][kk] = (valid && k < k_total) ? patch(in, k, px, s.images, s.side)
+                                                    : static_cast<signed char>(0);
+        }
+        __syncthreads();
+        wmma::fragment<wmma::matrix_a, kWmma, kWmma, kWmma, signed char, wmma::row_major> fa[2];
+        wmma::fragment<wmma::matrix_b, kWmma, kWmma, kWmma, signed char, wmma::col_major> fb[2];
+        for (int i = 0; i < 2; ++i) {
+            wmma::load_matrix_sync(fa[i], &ws[warp_m + i * kWmma][0], kI8BK + kI8Pad);
+            wmma::load_matrix_sync(fb[i], &ps[warp_n + i * kWmma][0], kI8BK + kI8Pad);
+        }
+        for (int i = 0; i < 2; ++i) {
+            for (int j = 0; j < 2; ++j) {
+                wmma::mma_sync(acc[i][j], fa[i], fb[j], acc[i][j]);
+            }
+        }
+        __syncthreads();
+    }
+    for (int i = 0; i < 2; ++i) {
+        for (int j = 0; j < 2; ++j) {
+            wmma::store_matrix_sync(&cs[warp_m + i * kWmma][warp_n + j * kWmma], acc[i][j],
+                                    kTcBN + 4, wmma::mem_row_major);
+        }
+    }
+    __syncthreads();
+    for (int i = t; i < kTcBM * kTcBN; i += kTcThreads) {
+        const int r = i / kTcBN;
+        const int cc = i % kTcBN;
+        const int m = m0 + r;
+        const int pp = n0 + cc;
+        if (m < m_total && pp < n_total) {
+            const float y = fmaxf(static_cast<float>(cs[r][cc]) * scale[m] + bias[m], 0.0F);
+            out[static_cast<std::size_t>(m) * n_total + pp] =
+                static_cast<signed char>(fminf(rintf(y * out_inv), 127.0F));
+        }
+    }
+}
+
+// Calibration: the largest value of x. Non-negative floats order like their bit patterns, so
+// an integer atomicMax on the bits is a float max.
+__global__ void max_kernel(const float* x, std::size_t n, unsigned* max_bits) {
+    float m = 0.0F;
+    for (std::size_t i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += static_cast<std::size_t>(gridDim.x) * blockDim.x) {
+        m = fmaxf(m, x[i]);
+    }
+    for (int delta = 16; delta > 0; delta /= 2) {
+        m = fmaxf(m, __shfl_down_sync(0xFFFFFFFFU, m, delta));
+    }
+    if (threadIdx.x % 32 == 0) {
+        atomicMax(max_bits, __float_as_uint(m));
     }
 }
 
@@ -321,13 +421,34 @@ unsigned grid_for(std::size_t total) {
 
 cudaError_t launch_preprocess(unsigned images, const detail::MapDesc* descs,
                               const std::uint8_t* bins, float* out, cudaStream_t s) {
-    preprocess_kernel<<<images, 256, 0, s>>>(descs, bins, static_cast<int>(images), out);
+    preprocess_kernel<<<images, 256, 0, s>>>(descs, bins, static_cast<int>(images), out, 1.0F);
     return cudaGetLastError();
 }
 
 cudaError_t launch_preprocess(unsigned images, const detail::MapDesc* descs,
                               const std::uint8_t* bins, __half* out, cudaStream_t s) {
-    preprocess_kernel<<<images, 256, 0, s>>>(descs, bins, static_cast<int>(images), out);
+    preprocess_kernel<<<images, 256, 0, s>>>(descs, bins, static_cast<int>(images), out,
+                                             __float2half(1.0F));
+    return cudaGetLastError();
+}
+
+cudaError_t launch_preprocess(unsigned images, const detail::MapDesc* descs,
+                              const std::uint8_t* bins, signed char* out, cudaStream_t s) {
+    preprocess_kernel<<<images, 256, 0, s>>>(descs, bins, static_cast<int>(images), out,
+                                             static_cast<signed char>(127));
+    return cudaGetLastError();
+}
+
+cudaError_t launch_conv_int8(const ConvShape& s, int padded_k, const signed char* weight,
+                             const float* scale, const float* bias, float out_inv,
+                             const signed char* in, signed char* out, cudaStream_t stream) {
+    const dim3 grid(blocks(s.images * s.side * s.side, kTcBN), blocks(s.out_channels, kTcBM));
+    conv_int8<<<grid, kTcThreads, 0, stream>>>(s, padded_k, weight, scale, bias, out_inv, in, out);
+    return cudaGetLastError();
+}
+
+cudaError_t launch_max(const float* x, std::size_t n, unsigned* max_bits, cudaStream_t stream) {
+    max_kernel<<<grid_for(n), 256, 0, stream>>>(x, n, max_bits);
     return cudaGetLastError();
 }
 
@@ -387,15 +508,30 @@ cudaError_t launch_maxpool(int channels, int images, int side, const __half* in,
 
 cudaError_t launch_head(int images, const float* in, const float* fc_weight, const float* fc_bias,
                         float* logits, cudaStream_t stream) {
-    head_kernel<<<static_cast<unsigned>(images), 256, 0, stream>>>(images, in, fc_weight, fc_bias,
-                                                                   logits);
+    head_kernel<<<static_cast<unsigned>(images), 256, 0, stream>>>(images, in, 1.0F, fc_weight,
+                                                                   fc_bias, logits);
     return cudaGetLastError();
 }
 
 cudaError_t launch_head(int images, const __half* in, const float* fc_weight, const float* fc_bias,
                         float* logits, cudaStream_t stream) {
-    head_kernel<<<static_cast<unsigned>(images), 256, 0, stream>>>(images, in, fc_weight, fc_bias,
-                                                                   logits);
+    head_kernel<<<static_cast<unsigned>(images), 256, 0, stream>>>(images, in, 1.0F, fc_weight,
+                                                                   fc_bias, logits);
+    return cudaGetLastError();
+}
+
+cudaError_t launch_head(int images, const signed char* in, float scale, const float* fc_weight,
+                        const float* fc_bias, float* logits, cudaStream_t stream) {
+    head_kernel<<<static_cast<unsigned>(images), 256, 0, stream>>>(images, in, scale, fc_weight,
+                                                                   fc_bias, logits);
+    return cudaGetLastError();
+}
+
+cudaError_t launch_maxpool(int channels, int images, int side, const signed char* in,
+                           signed char* out, cudaStream_t stream) {
+    maxpool_kernel<<<grid_for(static_cast<std::size_t>(channels) * images * (side / 2) *
+                              (side / 2)),
+                     256, 0, stream>>>(channels, images, side, in, out);
     return cudaGetLastError();
 }
 
