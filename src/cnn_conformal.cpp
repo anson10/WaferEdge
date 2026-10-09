@@ -29,7 +29,8 @@ std::expected<Conformal, std::string> load_conformal(const std::filesystem::path
             std::string hex;
             f >> hex;
             for (std::size_t i = 0; i < 32 && 2 * i + 1 < hex.size(); ++i) {
-                c.model_sha256[i] = static_cast<std::uint8_t>(std::stoi(hex.substr(2 * i, 2), nullptr, 16));
+                c.model_sha256[i] =
+                    static_cast<std::uint8_t>(std::stoi(hex.substr(2 * i, 2), nullptr, 16));
             }
             ++found;
         } else if (key == "thresholds") {
@@ -108,13 +109,15 @@ ConformalMetrics evaluate_conformal(std::span<const float> logits, std::span<con
         all_covered += covered[k];
         if (total[k] > 0) {
             m.worst_class_coverage =
-                std::min(m.worst_class_coverage, static_cast<double>(covered[k]) / static_cast<double>(total[k]));
+                std::min(m.worst_class_coverage,
+                         static_cast<double>(covered[k]) / static_cast<double>(total[k]));
         }
     }
     m.coverage = static_cast<double>(all_covered) / static_cast<double>(n);
     m.mean_set_size = static_cast<double>(set_sizes) / static_cast<double>(n);
     m.accept_rate = static_cast<double>(accepted) / static_cast<double>(n);
-    m.error_among_accepted = accepted == 0 ? 0.0 : static_cast<double>(accepted_wrong) / static_cast<double>(accepted);
+    m.error_among_accepted =
+        accepted == 0 ? 0.0 : static_cast<double>(accepted_wrong) / static_cast<double>(accepted);
     return m;
 }
 
