@@ -1,7 +1,18 @@
 include(Catch)
 
-add_executable(waferedge-tests test_machine.cpp)
-target_link_libraries(waferedge-tests PRIVATE waferedge waferedge_options Catch2::Catch2WithMain)
+# Synthetic wafer maps, shared by the tests and the benchmarks.
+add_library(waferedge_synth STATIC support/synth.cpp)
+target_include_directories(waferedge_synth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(waferedge_synth PUBLIC waferedge PRIVATE waferedge_options)
+
+add_executable(waferedge-tests
+  test_features.cpp
+  test_geometry.cpp
+  test_machine.cpp
+  test_map_file.cpp)
+target_link_libraries(waferedge-tests
+  PRIVATE waferedge waferedge_synth waferedge_options Catch2::Catch2WithMain)
+target_compile_definitions(waferedge-tests PRIVATE WAFEREDGE_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 catch_discover_tests(waferedge-tests)
 
 # GPU tests run locally only (CI has no GPU); `ctest -L gpu` selects them.

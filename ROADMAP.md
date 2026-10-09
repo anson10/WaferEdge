@@ -27,7 +27,7 @@ Every phase ends green in CI, with tests and at least one measured number.
 Decisions first (ask the user, then record in ADRs):
 - [x] C++ standard: install GCC 13 for C++23 (`std::expected`, `std::print`) or stay on C++20
 - [x] CUDA learning mode: the user writes the kernels with guidance, or Claude writes them
-- [ ] GitHub repo `anson10/WaferEdge` created (ask before creating; public, MIT)
+- [x] GitHub repo `anson10/WaferEdge` created (ask before creating; public, MIT)
 
 Setup:
 - [x] Layout: `include/waferedge/`, `src/`, `cuda/`, `tests/`, `bench/`, `fuzz/`, `tools/`,
@@ -48,11 +48,13 @@ Setup:
 ## Phase 1 — Wafer-map core, CPU (3–4 days)
 
 The domain model and classical spatial analysis, scalar first (the reference), then AVX2.
-- [ ] `WaferMap`: dense grid of bin codes (0 off wafer, 1 pass, ≥2 fail), view types
+- [x] `WaferMap`: dense grid of bin codes (0 off wafer, 1 pass, ≥2 fail), view types
       (`std::span`/`mdspan`-like), no per-die allocation; loaders for WaferLens Parquet maps
       (via a small Python export script to a compact binary format, or Arrow C++) and WM-811K
-- [ ] Features per map: yield, fail density by **radial zone** (centre → edge) and **angular
+      (`tools/export_maps.py` → `.wmap`, `MapSet::load`; ADR-0004)
+- [x] Features per map: yield, fail density by **radial zone** (centre → edge) and **angular
       sector**, edge-ring ratio, centre ratio
+      (exact integer zones/sectors per shape; scalar reference: ~414k maps/s on WaferLens)
 - [ ] Defect **clustering**: connected components on fail dies (union-find), cluster sizes,
       largest cluster, its centroid and shape (elongation, for scratches)
 - [ ] **Scratch** detection: Hough transform over fail dies (line-shaped chains)
@@ -68,7 +70,8 @@ The domain model and classical spatial analysis, scalar first (the reference), t
       WM-811K's labelled lot-disjoint test set: per-pattern recall/precision, macro-F1, next to
       FabEye's CNN and a trivial baseline (yield threshold). Report where rules win and lose.
 - [ ] `docs/evaluation.md` with the numbers and how to regenerate them
-- [ ] ADR-0004: classical, explainable signatures next to the CNN (why, and what each is for)
+- [x] ADR-0004: wafer-map file format and exact integer geometry
+- [ ] ADR-0005: classical, explainable signatures next to the CNN (why, and what each is for)
 
 ## Phase 2a — CUDA backend for the classical detectors (4–6 days; the learning-heavy phase)
 
@@ -91,7 +94,7 @@ reference, profiled.
       threads), GPU, across batch sizes 1 … 65,536; **find the crossover batch size**
 - [ ] `docs/gpu.md`: what each kernel does, the profile, the crossover, and the latency vs
       throughput trade-off of batching
-- [ ] ADR-0005: GPU batching strategy (fixed batch, deadline-based, or adaptive)
+- [ ] ADR-0006: GPU batching strategy (fixed batch, deadline-based, or adaptive)
 
 ## Phase 2b — Inference engine: FabEye's CNN on our own kernels (5–7 days)
 
@@ -125,7 +128,7 @@ facts (layers, preprocessing, calibration) are in docs/context.md.
 - [ ] The CNN as a third detector in the pipeline (phase 4) next to the rules; agreement / fusion
       of rule-based and CNN signals reported
 - [ ] `docs/inference.md` (the GEMM ladder table, quantisation results, coverage check)
-- [ ] ADR-0006: own kernels instead of TensorRT/ONNX Runtime (why: learning and control; what
+- [ ] ADR-0007: own kernels instead of TensorRT/ONNX Runtime (why: learning and control; what
       it costs), and the int8 scheme
 
 ## Phase 3 — SECS-II codec and HSMS transport (4–5 days)
@@ -149,7 +152,7 @@ The equipment protocol, from the bytes up.
       time; corpus checked in; any crash becomes a regression test
 - [ ] Benchmark: messages/s decoded and encoded, allocation count per message (should be 0)
 - [ ] `docs/secs.md`: the subset implemented, message layouts used, what is out of scope
-- [ ] ADR-0007: zero-copy views and error handling; ADR-0008: Asio coroutines for HSMS
+- [ ] ADR-0008: zero-copy views and error handling; ADR-0009: Asio coroutines for HSMS
 
 ## Phase 4 — The edge pipeline (3–4 days)
 
@@ -171,7 +174,7 @@ Putting it together, closed loop, with honest tail latency.
       (maps/s) vs tail latency
 - [ ] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,
       against WaferLens's batch pattern alarm (median 52 h, mostly sort lag) and against no hold
-- [ ] `docs/pipeline.md` and ADR-0009 (threading and queue design)
+- [ ] `docs/pipeline.md` and ADR-0010 (threading and queue design)
 
 ## Phase 5 — Python bindings and launch (2–3 days)
 

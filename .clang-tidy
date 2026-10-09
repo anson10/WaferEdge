@@ -1,5 +1,7 @@
-# clang-tidy 18: run on the dev build's compile_commands.json, e.g.
-#   run-clang-tidy-18 -p build/dev src tools
+# clang-tidy 18, e.g.
+#   run-clang-tidy-18 -p build/clang src tools  (the clang build: libc++ has std::expected)
+# pro-bounds-constant-array-index is off: histogram code indexes small arrays by computed
+# zone/sector ids that are in range by construction (and checked under ASan).
 Checks: >
   -*,
   bugprone-*,
@@ -11,6 +13,7 @@ Checks: >
   -cppcoreguidelines-pro-bounds-pointer-arithmetic,
   -cppcoreguidelines-pro-type-reinterpret-cast,
   -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
   misc-*,
   -misc-non-private-member-variables-in-classes,
   -misc-include-cleaner,

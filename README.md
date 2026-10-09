@@ -23,8 +23,9 @@ measured.
 
 ## Status
 
-Phase 0 (foundation) of [the roadmap](ROADMAP.md): build, presets, CI and decisions are in
-place; no detectors yet.
+Phase 1 of [the roadmap](ROADMAP.md) in progress: wafer maps load from both datasets
+([docs/data.md](docs/data.md)) and the scalar feature reference is in place (exact integer
+radial zones and angular sectors, ADR-0004). Detectors and the evaluation come next.
 
 ## Build
 
@@ -48,6 +49,19 @@ Every number here names the machine and the command that produced it.
 
 *Machine A*: Ryzen 5 7535HS (6 cores, AVX2), RTX 3050 Laptop 6 GB (sm_86), WSL2 Ubuntu 22.04,
 CUDA 12.4, GCC 13.
+
+**Scalar features** (fail counts by radial zone and angular sector, the reference every other
+backend must match bit for bit), `release` preset:
+
+| Input | Maps/s | Command |
+|---|---|---|
+| WaferLens demo, 24,090 maps (24² to 40²) | 414k | `build/release/tools/waferedge-maps data/waferlens_demo.wmap` |
+| WM-811K, 79,608 maps (341 shapes) | 267k | `build/release/tools/waferedge-maps data/wm811k_lot.wmap` |
+| Synthetic 24² / 30² / 40² / 64², 10% fails | 756k / 444k / 244k / 67k | `build/release/bench/bench-features` |
+
+`waferedge-maps` times whole passes over the file on a steady clock for at least a second;
+the benchmark reports the median of 5 repetitions (`--benchmark_repetitions=5`). Run-to-run
+spread on this laptop is up to ~20%, so treat differences under that as noise.
 
 **Host→device copy** (`cudaMemcpy`), median of 5 repetitions, `cuda` preset:
 
