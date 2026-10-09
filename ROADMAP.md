@@ -55,10 +55,10 @@ The domain model and classical spatial analysis, scalar first (the reference), t
 - [x] Features per map: yield, fail density by **radial zone** (centre → edge) and **angular
       sector**, edge-ring ratio, centre ratio
       (exact integer zones/sectors per shape; scalar reference: ~414k maps/s on WaferLens)
-- [ ] Defect **clustering**: connected components on fail dies (union-find), cluster sizes,
-      largest cluster, its centroid and shape (elongation, for scratches)
-- [ ] **Scratch** detection: Hough transform over fail dies (line-shaped chains)
-- [ ] **Spatial randomness** test: is the fail field random or clustered (e.g. nearest-
+- [x] Defect **clustering**: connected components on fail dies (union-find), cluster sizes,
+      largest cluster, its centroid and shape (elongation, for scratches) (docs/signatures.md)
+- [x] **Scratch** detection: Hough transform over fail dies (line-shaped chains)
+- [x] **Spatial randomness** test: is the fail field random or clustered (e.g. nearest-
       neighbour or join-count statistic against a binomial null)
 - [ ] Rule-based classifier: features → {none, center, donut, edge-loc, edge-ring, loc,
       scratch, random, near-full}, thresholds fitted on a training split only

@@ -1,8 +1,11 @@
 add_library(waferedge
+  clusters.cpp
   features.cpp
   geometry.cpp
+  hough.cpp
   machine.cpp
   map_file.cpp
+  randomness.cpp
   wafer_map.cpp)
 add_library(waferedge::waferedge ALIAS waferedge)
 target_include_directories(waferedge PUBLIC ${PROJECT_SOURCE_DIR}/include)

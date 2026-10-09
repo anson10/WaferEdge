@@ -107,8 +107,9 @@ the machine, and the design sketch. Read both before starting work.
 - `python3 tools/export_maps.py waferlens ~/waferLens/data/demo data/waferlens_demo.wmap` and
   `... wm811k ~/FabEye/data/wm811k/processed_lot.pkl data/wm811k_lot.wmap`: export the
   datasets (docs/data.md).
-- `build/release/tools/waferedge-maps <file.wmap>`: counts by truth/split and features maps/s.
-- `build/release/bench/bench-features`: scalar features, maps/s by map size.
+- `build/release/tools/waferedge-maps <file.wmap>`: counts by truth/split, median signals per
+  truth class, and maps/s of each scalar stage.
+- `build/release/bench/bench-features`: each scalar stage, maps/s by map size.
 - `pre-commit run --all-files`: whitespace, YAML/JSON, clang-format 18.
 - `clang-tidy-18 -p build/clang <files>`: use the clang build's compile commands; with GCC's
   libstdc++, Clang 18 can't see `std::expected`.
