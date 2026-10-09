@@ -107,10 +107,12 @@ the machine, and the design sketch. Read both before starting work.
 - `ctest --preset cuda-cpu`: the CUDA build's tests without the `gpu` label (what CI runs).
 - `build/<preset>/tools/waferedge-info`: the build and machine; quote it with any number.
 - `build/cuda/bench/bench-transfer`: host→device copy bandwidth, pageable vs pinned.
-- `build/cuda/bench/bench-gpu`: CPU vs GPU features by batch size (`_timed` variants split
-  pack / upload / kernel / download). `ctest --preset cuda -L gpu`: GPU tests only.
-- GPU tools on WSL2: `nsys profile -t cuda` works (CPU side of CUDA calls only); `ncu` needs
-  Windows-side counter access (docs/gpu.md); `compute-sanitizer` doesn't attach (needs the
+- `build/cuda/bench/bench-gpu`: CPU vs GPU features and Hough by batch size (`_timed`
+  variants split pack / upload / kernel / download). `ctest --preset cuda -L gpu`: GPU tests.
+- `ncu --set full --kernel-name regex:<kernel> --launch-skip 1 --launch-count 1 -o <out> <binary>`
+  then `ncu -i <out>.ncu-rep`: one kernel's profile (write reports outside the repo).
+- GPU tools on WSL2: `nsys profile -t cuda` works (CPU side of CUDA calls only); `ncu` works
+  (counter access enabled on Windows 2026-10-09, `RmProfilingAdminOnly = 0`); `compute-sanitizer` doesn't attach (needs the
   Windows toolkit's EnableDebuggerInterface.bat). Keep CUDA events off the hot path: each
   driver call costs ~15–50 µs on WSL2.
 - `python3 tools/export_maps.py waferlens ~/waferLens/data/demo data/waferlens_demo.wmap` and

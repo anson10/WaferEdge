@@ -89,13 +89,15 @@ reference, profiled.
       warp-aggregated v2 measured 2x slower; crossover vs one AVX2 core at ~300 maps, docs/gpu.md)
 - [ ] Kernel 2: **connected-component labelling** on GPU (iterative union-find, e.g. the
       "label equivalence" / Playne–Hawick approach); compare with CPU union-find
-- [ ] Kernel 3: **Hough transform** voting with atomics, then a peak search
+- [x] Kernel 3: **Hough transform** voting with atomics, then a peak search
+      (one thread per angle instead: no atomics; == CPU on all real maps; 26–84× one core)
 - [ ] Memory: pinned host buffers, device buffer pools, **CUDA streams** overlapping copy and
       compute, no `cudaMalloc` per batch
 - [ ] Tests (local, GPU-labelled): bit-for-bit equal features and equivalent labellings to the
       scalar reference on random batches
-- [ ] Profiling with Nsight Compute / Systems: occupancy, memory throughput, a roofline-style
+- [x] Profiling with Nsight Compute / Systems: occupancy, memory throughput, a roofline-style
       explanation of each kernel's bound; one optimisation iteration with before/after numbers
+      (v1 LSU-bound, v2 2x slower explained; Hough −33% from removing a barrier-bound chunk)
 - [ ] Benchmark: throughput (maps/s) and latency per batch for CPU scalar, CPU AVX2 (all
       threads), GPU, across batch sizes 1 … 65,536; **find the crossover batch size**
 - [ ] `docs/gpu.md`: what each kernel does, the profile, the crossover, and the latency vs

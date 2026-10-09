@@ -1,8 +1,9 @@
-// The GPU feature backend against the scalar reference, with ==. Labelled gpu: runs locally
-// (ctest --preset cuda), not in CI.
+// The GPU signatures (features, Hough line) against the CPU references, with ==. Labelled gpu: runs
+// locally (ctest --preset cuda), not in CI.
 #include "support/synth.hpp"
 #include "waferedge/backend.hpp"
-#include "waferedge/gpu_features.hpp"
+#include "waferedge/gpu_signatures.hpp"
+#include "waferedge/hough.hpp"
 #include "waferedge/map_file.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -13,8 +14,8 @@
 #include <vector>
 
 using namespace waferedge;
-using gpu::FeatureEngine;
 using gpu::FeatureKernel;
+using gpu::SignatureEngine;
 
 namespace {
 
@@ -45,10 +46,10 @@ struct Batch {
         maps.push_back(std::move(map));
     }
 
-    void check(FeatureEngine& engine) const {
+    void check(SignatureEngine& engine) const {
         std::vector<WaferMapView> views(maps.begin(), maps.end());
         std::vector<Features> out(maps.size());
-        REQUIRE(engine.run(views, per_map, out));
+        REQUIRE(engine.run(views, per_map, out, {}));
         std::size_t differ = 0;
         for (std::size_t i = 0; i < maps.size(); ++i) {
             if (out[i] != backend::Scalar::features(maps[i], *per_map[i])) {
@@ -76,7 +77,7 @@ TEST_CASE("both GPU kernels match scalar on a batch of mixed shapes and densitie
             batch.add(synth::random_map(rows, cols, per_mille, seed++));
         }
     }
-    FeatureEngine engine(kernel);
+    SignatureEngine engine(kernel);
     batch.check(engine);
 }
 
@@ -93,7 +94,7 @@ TEST_CASE("the GPU backend, one map per call, matches scalar") {
 TEST_CASE("the GPU counts a whole map into one bucket, and every byte value as a bin") {
     require_gpu();
     const auto kernel = GENERATE(FeatureKernel::shared_atomics, FeatureKernel::warp_aggregated);
-    FeatureEngine engine(kernel);
+    SignatureEngine engine(kernel);
     // Every die in bucket 0: maximum contention on one shared counter.
     const int n = 600 * 32 + 5;
     const auto zeros = std::vector<std::uint8_t>(static_cast<std::size_t>(n), 0);
@@ -102,7 +103,7 @@ TEST_CASE("the GPU counts a whole map into one bucket, and every byte value as a
     Features f;
     const WaferMapView view = fail_all;
     const Geometry* g = &one_bucket;
-    REQUIRE(engine.run({&view, 1}, {&g, 1}, {&f, 1}));
+    REQUIRE(engine.run({&view, 1}, {&g, 1}, {&f, 1}, {}));
     CHECK(f.zone_fails[0] == static_cast<std::uint32_t>(n));
     CHECK(f == backend::Scalar::features(fail_all, one_bucket));
 
@@ -128,8 +129,8 @@ TEST_CASE("the GPU matches scalar on the real WaferLens fixture, as one batch") 
         geometries.push_back(&cache.get(r.map.rows(), r.map.cols()));
     }
     std::vector<Features> out(views.size());
-    FeatureEngine engine;
-    REQUIRE(engine.run(views, geometries, out));
+    SignatureEngine engine;
+    REQUIRE(engine.run(views, geometries, out, {}));
     for (std::size_t i = 0; i < views.size(); ++i) {
         CHECK(out[i] == backend::Scalar::features(views[i], *geometries[i]));
     }
@@ -137,10 +138,10 @@ TEST_CASE("the GPU matches scalar on the real WaferLens fixture, as one batch") 
 
 TEST_CASE("buffers grow and geometry stays cached across runs") {
     require_gpu();
-    FeatureEngine engine;
+    SignatureEngine engine;
     engine.set_timing(true);
     SECTION("an empty batch is fine") {
-        CHECK(engine.run({}, {}, {}));
+        CHECK(engine.run({}, {}, {}, {}));
     }
     SECTION("small, then large, then small batches give the same answers") {
         for (const std::size_t size : {std::size_t{1}, std::size_t{5000}, std::size_t{3}}) {
@@ -152,8 +153,102 @@ TEST_CASE("buffers grow and geometry stays cached across runs") {
             batch.check(engine); // second run: geometry from the cache, buffers reused
             const auto t = engine.last_timings();
             CHECK(t.upload_ms >= 0);
-            CHECK(t.kernel_ms > 0);
+            CHECK(t.features_ms > 0);
             CHECK(t.download_ms >= 0);
         }
     }
+}
+
+namespace {
+
+// Hough lines of a batch on the GPU, compared map by map with the CPU's HoughTransform.
+void check_lines(SignatureEngine& engine, const std::vector<WaferMap>& maps) {
+    std::vector<WaferMapView> views(maps.begin(), maps.end());
+    std::vector<HoughLine> lines(maps.size());
+    REQUIRE(engine.run(views, {}, {}, lines));
+    HoughTransform cpu;
+    for (std::size_t i = 0; i < maps.size(); ++i) {
+        const auto expected = cpu.run(maps[i]);
+        INFO("map " << i << " (" << maps[i].rows() << "x" << maps[i].cols() << "): gpu angle "
+                    << lines[i].angle << " rho " << lines[i].rho << " votes " << lines[i].votes
+                    << ", cpu angle " << expected.angle << " rho " << expected.rho << " votes "
+                    << expected.votes);
+        CHECK(lines[i] == expected);
+    }
+}
+
+WaferMap with_scratch(int rows, int cols, unsigned per_mille, std::uint32_t seed) {
+    auto map = synth::random_map(rows, cols, per_mille, seed);
+    synth::paint(map, [&](int r, int c) {
+        return c == cols / 4 + r / 2 && r > rows / 6 && r < rows - rows / 6;
+    });
+    return map;
+}
+
+} // namespace
+
+TEST_CASE("the GPU Hough line equals the CPU's on mixed shapes, densities and scratches") {
+    require_gpu();
+    std::vector<WaferMap> maps;
+    std::uint32_t seed = 100;
+    for (const auto& [rows, cols] :
+         {std::pair{3, 11}, std::pair{24, 24}, std::pair{25, 27}, std::pair{29, 26},
+          std::pair{30, 34}, std::pair{40, 40}, std::pair{64, 64}}) {
+        for (const unsigned per_mille : {0U, 20U, 150U, 600U, 1000U}) {
+            maps.push_back(synth::random_map(rows, cols, per_mille, seed++));
+            maps.push_back(with_scratch(rows, cols, per_mille / 4, seed++));
+        }
+    }
+    SignatureEngine engine;
+    check_lines(engine, maps);
+}
+
+TEST_CASE("the GPU Hough line equals the CPU's on maps too big for one chunk of angles") {
+    require_gpu();
+    // rows + cols > 64: the vote table doesn't fit 180 angles; WM-811K's largest is 212 x 204.
+    const std::vector<WaferMap> maps = {
+        with_scratch(212, 204, 30, 1), synth::random_map(212, 204, 300, 2),
+        with_scratch(300, 300, 10, 3), synth::random_map(97, 131, 100, 4)};
+    SignatureEngine engine;
+    check_lines(engine, maps);
+}
+
+TEST_CASE("ties go the CPU's way: lowest angle, then lowest offset") {
+    require_gpu();
+    std::vector<WaferMap> maps;
+    // No fails: no line at all.
+    maps.push_back(synth::disc(30, 30));
+    // One fail die: every angle gets one vote, the line is angle 0.
+    auto one = synth::disc(30, 30);
+    one.set(10, 12, 2);
+    maps.push_back(std::move(one));
+    // Two equally long parallel scratches: two bins tie at the same angle.
+    auto two = synth::disc(40, 40);
+    synth::paint(two, [](int r, int c) { return (r == 12 || r == 27) && c >= 10 && c < 30; });
+    maps.push_back(std::move(two));
+    // A short scratch: a plateau of equal-vote angles around its normal.
+    auto plateau = synth::disc(40, 40);
+    synth::paint(plateau, [](int r, int c) { return c == 20 && r >= 17 && r < 23; });
+    maps.push_back(std::move(plateau));
+    SignatureEngine engine;
+    check_lines(engine, maps);
+}
+
+TEST_CASE("features and Hough from one upload equal each computed alone") {
+    require_gpu();
+    Batch batch;
+    for (std::uint32_t i = 0; i < 64; ++i) {
+        batch.add(with_scratch(40, 40, 80, i));
+    }
+    std::vector<WaferMapView> views(batch.maps.begin(), batch.maps.end());
+    std::vector<Features> both_f(views.size());
+    std::vector<HoughLine> both_l(views.size());
+    std::vector<Features> alone_f(views.size());
+    std::vector<HoughLine> alone_l(views.size());
+    SignatureEngine engine;
+    REQUIRE(engine.run(views, batch.per_map, both_f, both_l));
+    REQUIRE(engine.run(views, batch.per_map, alone_f, {}));
+    REQUIRE(engine.run(views, {}, {}, alone_l));
+    CHECK(both_f == alone_f);
+    CHECK(both_l == alone_l);
 }
