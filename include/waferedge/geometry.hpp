@@ -39,6 +39,12 @@ inline constexpr int kRings = 10;  // equal-width radial rings, 0.1 of the radiu
 class Geometry {
 public:
     Geometry(int rows, int cols);
+    // Explicit tables instead of the formulas: for tests that need a layout no wafer shape
+    // produces (every die in one bucket), and for custom zone layouts. Preconditions: each
+    // table has rows * cols entries, zones < kZones, sectors < kSectors, rings < kRings.
+    [[nodiscard]] static Geometry from_tables(int rows, int cols, std::vector<std::uint8_t> zones,
+                                              std::vector<std::uint8_t> sectors,
+                                              std::vector<std::uint8_t> rings);
 
     [[nodiscard]] int rows() const noexcept { return rows_; }
     [[nodiscard]] int cols() const noexcept { return cols_; }
@@ -48,8 +54,9 @@ public:
     [[nodiscard]] std::span<const std::uint8_t> rings() const noexcept { return rings_; }
 
 private:
-    int rows_;
-    int cols_;
+    Geometry() = default;
+    int rows_ = 0;
+    int cols_ = 0;
     std::vector<std::uint8_t> zones_;
     std::vector<std::uint8_t> sectors_;
     std::vector<std::uint8_t> rings_;

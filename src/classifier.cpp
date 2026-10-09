@@ -1,5 +1,6 @@
 #include "waferedge/classifier.hpp"
 
+#include "waferedge/backend.hpp"
 #include "waferedge/features.hpp"
 #include "waferedge/randomness.hpp"
 
@@ -59,7 +60,8 @@ void set(Signals& s, Signal which, double value) noexcept {
 
 Signals SignalExtractor::extract(WaferMapView map) {
     Signals s{};
-    const auto f = compute_features(map, geometry_.get(map.rows(), map.cols()));
+    // The fastest backend this CPU has; every backend gives the same counts.
+    const auto f = best_features()(map, geometry_.get(map.rows(), map.cols()));
     const double density = fail_density(f);
     set(s, Signal::density, density);
     set(s, Signal::z, join_count_z(join_count(map)));

@@ -2,6 +2,7 @@ add_library(waferedge
   classifier.cpp
   clusters.cpp
   features.cpp
+  features_avx2.cpp
   geometry.cpp
   hough.cpp
   machine.cpp

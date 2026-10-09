@@ -54,6 +54,9 @@ the machine, and the design sketch. Read both before starting work.
   reported. Never quote a number without how it was measured.
 - **Latency is measured on a steady clock** (WSL2's wall clock steps by ~1 s). Report
   percentiles from a histogram, not means; say how coordinated omission is handled.
+- **SIMD**: intrinsics only inside functions marked `[[gnu::target("avx2")]]`, reached through
+  a backend's `available()` / `best_features()`; never `-mavx2` or `-march=native` on a file or
+  target (ADR-0006). Check hot loops for spills with `objdump -d` before claiming a speed-up.
 - **No allocation on the hot path** once the pipeline exists; a test counts allocations.
 - Lock-free code gets TSan runs and a stress test; the parser gets a fuzz target in CI.
 - GPU tests can't run in GitHub CI (no GPU): CI compiles the CUDA code and runs CPU paths;

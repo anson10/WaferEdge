@@ -3,6 +3,7 @@
 //
 //   build/release/bench/bench-features
 #include "support/synth.hpp"
+#include "waferedge/backend.hpp"
 #include "waferedge/clusters.hpp"
 #include "waferedge/features.hpp"
 #include "waferedge/hough.hpp"
@@ -38,10 +39,15 @@ void run_batch(benchmark::State& state, Stage&& stage) {
                             static_cast<std::int64_t>(maps.size()));
 }
 
-void BM_features_scalar(benchmark::State& state) {
+template <FeatureBackend B>
+void BM_features(benchmark::State& state) {
+    if (!B::available()) {
+        state.SkipWithError("backend not supported by this CPU");
+        return;
+    }
     const int n = static_cast<int>(state.range(0));
     const Geometry geometry(n, n);
-    run_batch(state, [&](const WaferMap& m) { return compute_features(m, geometry); });
+    run_batch(state, [&](const WaferMap& m) { return B::features(m, geometry); });
 }
 
 void BM_clusters_scalar(benchmark::State& state) {
@@ -61,7 +67,8 @@ void BM_join_count_scalar(benchmark::State& state) {
     run_batch(state, [](const WaferMap& m) { return join_count(m); });
 }
 
-BENCHMARK(BM_features_scalar)->Arg(24)->Arg(30)->Arg(40)->Arg(64);
+BENCHMARK(BM_features<backend::Scalar>)->Arg(24)->Arg(30)->Arg(40)->Arg(64);
+BENCHMARK(BM_features<backend::Avx2>)->Arg(24)->Arg(30)->Arg(40)->Arg(64);
 BENCHMARK(BM_clusters_scalar)->Arg(24)->Arg(30)->Arg(40)->Arg(64);
 BENCHMARK(BM_hough_scalar)->Arg(24)->Arg(30)->Arg(40)->Arg(64);
 BENCHMARK(BM_join_count_scalar)->Arg(24)->Arg(30)->Arg(40)->Arg(64);

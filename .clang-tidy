@@ -2,6 +2,8 @@
 #   run-clang-tidy-18 -p build/clang src tools  (the clang build: libc++ has std::expected)
 # pro-bounds-constant-array-index is off: histogram code indexes small arrays by computed
 # zone/sector ids that are in range by construction (and checked under ASan).
+# portability-simd-intrinsics is off: intrinsics are deliberate and isolated behind run-time
+# dispatch (ADR-0006).
 Checks: >
   -*,
   bugprone-*,
@@ -21,6 +23,7 @@ Checks: >
   -modernize-use-trailing-return-type,
   performance-*,
   portability-*,
+  -portability-simd-intrinsics,
   readability-*,
   -readability-identifier-length,
   -readability-magic-numbers,

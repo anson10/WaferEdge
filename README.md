@@ -23,11 +23,12 @@ measured.
 
 ## Status
 
-Phase 1 of [the roadmap](ROADMAP.md): wafer maps load from both datasets
-([docs/data.md](docs/data.md)); the scalar detectors (zones, sectors, rings, clusters, a Hough
-scratch search, a join-count randomness test) feed an explainable rule classifier with
-thresholds fitted on WM-811K train ([docs/signatures.md](docs/signatures.md), ADR-0004,
-ADR-0005). The AVX2 backend comes next.
+Phase 1 of [the roadmap](ROADMAP.md) is complete: wafer maps load from both datasets
+([docs/data.md](docs/data.md)); scalar detectors (zones, sectors, rings, clusters, a Hough
+scratch search, a join-count randomness test, [docs/signatures.md](docs/signatures.md)) feed
+an explainable rule classifier evaluated against FabEye's CNN
+([docs/evaluation.md](docs/evaluation.md)); the feature counts also run on AVX2
+([docs/avx2.md](docs/avx2.md)). Phase 2a (CUDA) is next.
 
 ## Build
 
@@ -63,14 +64,15 @@ edge-loc, loc and scratch.
 *Machine A*: Ryzen 5 7535HS (6 cores, AVX2), RTX 3050 Laptop 6 GB (sm_86), WSL2 Ubuntu 22.04,
 CUDA 12.4, GCC 13.
 
-**Scalar features** (fail counts by radial zone and angular sector, the reference every other
-backend must match bit for bit), `release` preset:
+**Features** (die and fail counts by radial zone, angular sector and ring; every backend must
+match the scalar reference bit for bit), `release` preset, one thread; real-data rows are
+ranges over several runs, which swing ±25% on this laptop ([docs/avx2.md](docs/avx2.md)):
 
-| Input | Maps/s | Command |
-|---|---|---|
-| WaferLens demo, 24,090 maps (24² to 40²) | 414k | `build/release/tools/waferedge-maps data/waferlens_demo.wmap` |
-| WM-811K, 79,608 maps (341 shapes) | 267k | `build/release/tools/waferedge-maps data/wm811k_lot.wmap` |
-| Synthetic 24² / 30² / 40² / 64², 10% fails | 756k / 444k / 244k / 67k | `build/release/bench/bench-features` |
+| Input | Scalar | AVX2 | Command |
+|---|---|---|---|
+| WaferLens demo, 24,090 maps (24² to 40²) | 303–314k maps/s | 1.03–1.13M | `build/release/tools/waferedge-maps data/waferlens_demo.wmap` |
+| WM-811K, 79,608 maps (341 shapes) | 180–208k | 531–860k | `build/release/tools/waferedge-maps data/wm811k_lot.wmap` |
+| Synthetic 24² / 64², 10% fails | 599k / 64k | 1.89M / 347k | `build/release/bench/bench-features --benchmark_filter=BM_features` |
 
 Per stage on WaferLens: clusters 146k, join count 196k, Hough transform 19k maps/s
 (docs/signatures.md).

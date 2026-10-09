@@ -1,5 +1,7 @@
 #include "waferedge/features.hpp"
 
+#include "features_detail.hpp"
+
 #include <algorithm>
 #include <cassert>
 
@@ -7,28 +9,10 @@ namespace waferedge {
 
 Features compute_features(WaferMapView map, const Geometry& geometry) noexcept {
     assert(map.rows() == geometry.rows() && map.cols() == geometry.cols());
-    const auto bins = map.bins();
-    const auto zones = geometry.zones();
-    const auto sectors = geometry.sectors();
-    const auto rings = geometry.rings();
     Features f;
-    for (std::size_t i = 0; i < bins.size(); ++i) {
-        const std::uint8_t bin = bins[i];
-        if (!on_wafer(bin)) {
-            continue;
-        }
-        const std::uint32_t fail = is_fail(bin) ? 1U : 0U;
-        ++f.zone_dies[zones[i]];
-        ++f.sector_dies[sectors[i]];
-        ++f.ring_dies[rings[i]];
-        f.zone_fails[zones[i]] += fail;
-        f.sector_fails[sectors[i]] += fail;
-        f.ring_fails[rings[i]] += fail;
-    }
-    for (int z = 0; z < kZones; ++z) {
-        f.dies += f.zone_dies[static_cast<std::size_t>(z)];
-        f.fails += f.zone_fails[static_cast<std::size_t>(z)];
-    }
+    detail::count_dies(f, map.bins().data(), geometry.zones().data(), geometry.sectors().data(),
+                       geometry.rings().data(), 0, map.bins().size());
+    detail::finish_totals(f);
     return f;
 }
 
