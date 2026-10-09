@@ -39,7 +39,9 @@ jobs:
     # No GPU on GitHub's runners: compile the CUDA backend and run the CPU tests only.
     # GPU tests (label "gpu") run locally: ctest --preset cuda.
     runs-on: ubuntu-24.04
-    container: nvidia/cuda:12.4.1-devel-ubuntu22.04
+    # NVIDIA's registry: the same image as Docker Hub's nvidia/cuda, without Docker Hub's
+    # anonymous pull limit (shared runner IPs hit it: PR #15 failed 3 times at the pull).
+    container: nvcr.io/nvidia/cuda:12.4.1-devel-ubuntu22.04
     steps:
       # GCC 13 for the C++23 host code; nvcc uses the image's GCC 11 (ADR-0001).
       - name: Install GCC 13, CMake and Ninja
