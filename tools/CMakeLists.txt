@@ -6,3 +6,6 @@ target_link_libraries(waferedge-maps PRIVATE waferedge waferedge_options)
 
 add_executable(waferedge-classify waferedge_classify.cpp)
 target_link_libraries(waferedge-classify PRIVATE waferedge waferedge_options)
+
+add_executable(waferedge-cnn waferedge_cnn.cpp)
+target_link_libraries(waferedge-cnn PRIVATE waferedge waferedge_options)

@@ -31,7 +31,9 @@ an explainable rule classifier evaluated against FabEye's CNN
 ([docs/avx2.md](docs/avx2.md)). Phase 2a (CUDA) is under way: the feature counts run on the
 GPU in batches, with the Hough transform and the clusters: all three from one upload ~9× the
 whole CPU at large batches; replayed as CUDA Graphs, the GPU passes the whole CPU from ~4 maps
-a batch ([docs/gpu.md](docs/gpu.md), ADR-0007).
+a batch ([docs/gpu.md](docs/gpu.md), ADR-0007). Phase 2b (the inference engine) has started: FabEye's
+CNN runs on WaferEdge's own C++ reference, equal to ONNX Runtime's predictions on every
+checked map and FabEye's macro-F1 of 0.858 ([docs/inference.md](docs/inference.md)).
 
 ## Build
 
