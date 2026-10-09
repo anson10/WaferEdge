@@ -24,8 +24,10 @@ measured.
 ## Status
 
 Phase 1 of [the roadmap](ROADMAP.md) in progress: wafer maps load from both datasets
-([docs/data.md](docs/data.md)) and the scalar feature reference is in place (exact integer
-radial zones and angular sectors, ADR-0004). Detectors and the evaluation come next.
+([docs/data.md](docs/data.md)); the scalar detectors are in place: radial / angular features
+with exact integer geometry (ADR-0004), fail clusters, a Hough scratch search and a join-count
+randomness test ([docs/signatures.md](docs/signatures.md)). The rule classifier and its
+evaluation against ground truth and FabEye come next.
 
 ## Build
 
@@ -58,6 +60,9 @@ backend must match bit for bit), `release` preset:
 | WaferLens demo, 24,090 maps (24² to 40²) | 414k | `build/release/tools/waferedge-maps data/waferlens_demo.wmap` |
 | WM-811K, 79,608 maps (341 shapes) | 267k | `build/release/tools/waferedge-maps data/wm811k_lot.wmap` |
 | Synthetic 24² / 30² / 40² / 64², 10% fails | 756k / 444k / 244k / 67k | `build/release/bench/bench-features` |
+
+Per stage on WaferLens: clusters 146k, join count 196k, Hough transform 19k maps/s
+(docs/signatures.md).
 
 `waferedge-maps` times whole passes over the file on a steady clock for at least a second;
 the benchmark reports the median of 5 repetitions (`--benchmark_repetitions=5`). Run-to-run

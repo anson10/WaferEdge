@@ -1,21 +1,29 @@
-// Summarises a .wmap file and times the scalar features over all of it.
+// Summarises a .wmap file: counts by truth and split, the median of each spatial signal per
+// truth class, and the throughput of each scalar stage over the whole set.
 //
 //   waferedge-maps data/waferlens_demo.wmap
 //
-// The timing is wall time on a steady clock over whole passes of the set (geometry tables
-// built beforehand), repeated until at least a second has passed; maps/s is total maps over
-// total time.
+// Timing is wall time on a steady clock over whole passes of the set (geometry tables and
+// buffers warmed up beforehand), repeated until at least a second has passed; maps/s is total
+// maps over total time.
+#include "waferedge/clusters.hpp"
 #include "waferedge/features.hpp"
+#include "waferedge/hough.hpp"
 #include "waferedge/machine.hpp"
 #include "waferedge/map_file.hpp"
+#include "waferedge/randomness.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <format>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 using namespace waferedge;
 
@@ -25,9 +33,7 @@ void print(const std::string& s) {
     std::fputs(s.c_str(), stdout);
 }
 
-} // namespace
-
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
     if (argc != 2) {
         std::fputs("usage: waferedge-maps <file.wmap>\n", stderr);
         return 2;
@@ -79,24 +85,100 @@ int main(int argc, char** argv) {
     for (const auto& r : records) {
         (void)cache.get(r.map.rows(), r.map.cols());
     }
-    using clock = std::chrono::steady_clock;
-    std::uint64_t checksum = 0;
-    std::size_t passes = 0;
-    const auto start = clock::now();
-    auto elapsed = clock::duration{};
-    do {
-        for (const auto& r : records) {
-            const auto f = compute_features(r.map, cache.get(r.map.rows(), r.map.cols()));
-            checksum += f.fails;
+    ClusterFinder clusters;
+    HoughTransform hough;
+
+    // Median of each signal per truth class: a first look at what separates the patterns.
+    struct Signals {
+        std::vector<double> density, center, edge, sector, cluster_share, elongation, line, z;
+    };
+    std::array<Signals, kPatternCount + 1> signals;
+    for (const auto& r : records) {
+        const auto f = compute_features(r.map, cache.get(r.map.rows(), r.map.cols()));
+        clusters.run(r.map);
+        const auto line = hough.run(r.map);
+        const Cluster* big = clusters.largest();
+        auto& s = signals[r.truth == Pattern::unknown ? kPatternCount
+                                                      : static_cast<std::size_t>(r.truth)];
+        s.density.push_back(fail_density(f));
+        s.center.push_back(center_ratio(f));
+        s.edge.push_back(edge_ratio(f));
+        s.sector.push_back(max_sector_ratio(f));
+        s.cluster_share.push_back(big == nullptr ? 0.0 : static_cast<double>(big->size) / f.fails);
+        s.elongation.push_back(big == nullptr ? 0.0 : shape(*big).elongation);
+        s.line.push_back(line.line_dies == 0 || f.fails == 0
+                             ? 0.0
+                             : (static_cast<double>(line.votes) / line.line_dies) /
+                                   fail_density(f));
+        s.z.push_back(join_count_z(join_count(r.map)));
+    }
+    const auto median = [](std::vector<double>& v) {
+        if (v.empty()) {
+            return 0.0;
         }
-        ++passes;
-        elapsed = clock::now() - start;
-    } while (elapsed < std::chrono::seconds(1));
-    const double seconds = std::chrono::duration<double>(elapsed).count();
-    const auto maps = static_cast<double>(passes * records.size());
-    print(std::format("scalar features: {:.0f} maps/s, {:.0f} ns/map ({} passes, {:.2f} s, "
-                      "checksum {})\n",
-                      maps / seconds, seconds * 1e9 / maps, passes, seconds, checksum / passes));
+        const auto mid = v.begin() + static_cast<std::ptrdiff_t>(v.size() / 2);
+        std::ranges::nth_element(v, mid);
+        return *mid;
+    };
+    print("\nmedian signals by truth: fail density, zone ratios (center, edge), densest sector\n"
+          "ratio, largest cluster's share of fails and its elongation, Hough line density ratio,\n"
+          "join-count z\n");
+    print(std::format("{:<10} {:>7} {:>6} {:>6} {:>6} {:>7} {:>6} {:>6} {:>7}\n", "truth",
+                      "density", "center", "edge", "sector", "cluster", "elong", "line", "z"));
+    for (std::size_t p = 0; p <= kPatternCount; ++p) {
+        auto& s = signals[p];
+        if (s.density.empty()) {
+            continue;
+        }
+        const auto name = p == kPatternCount ? "unknown" : pattern_name(static_cast<Pattern>(p));
+        print(std::format("{:<10} {:>7.3f} {:>6.2f} {:>6.2f} {:>6.2f} {:>7.2f} {:>6.1f} {:>6.1f} "
+                          "{:>7.1f}\n",
+                          name, median(s.density), median(s.center), median(s.edge),
+                          median(s.sector), median(s.cluster_share), median(s.elongation),
+                          median(s.line), median(s.z)));
+    }
+
+    // Throughput of each stage alone, over whole passes of the set.
+    print("\nscalar throughput, one stage at a time (whole passes, >= 1 s each):\n");
+    const auto time_stage = [&](std::string_view name, auto&& stage) {
+        using clock = std::chrono::steady_clock;
+        std::uint64_t checksum = 0;
+        std::size_t passes = 0;
+        const auto start = clock::now();
+        auto elapsed = clock::duration{};
+        do {
+            for (const auto& r : records) {
+                checksum += stage(r.map);
+            }
+            ++passes;
+            elapsed = clock::now() - start;
+        } while (elapsed < std::chrono::seconds(1));
+        const double seconds = std::chrono::duration<double>(elapsed).count();
+        const auto maps = static_cast<double>(passes * records.size());
+        print(std::format("  {:<12} {:>9.0f} maps/s {:>8.0f} ns/map  (checksum {})\n", name,
+                          maps / seconds, seconds * 1e9 / maps, checksum / passes));
+    };
+    time_stage("features", [&](WaferMapView m) -> std::uint64_t {
+        return compute_features(m, cache.get(m.rows(), m.cols())).fails;
+    });
+    time_stage("clusters", [&](WaferMapView m) -> std::uint64_t {
+        clusters.run(m);
+        return clusters.clusters().size();
+    });
+    time_stage("hough", [&](WaferMapView m) -> std::uint64_t { return hough.run(m).votes; });
+    time_stage("join count",
+               [&](WaferMapView m) -> std::uint64_t { return join_count(m).fail_joins; });
     print(describe_machine());
     return 0;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& e) {
+        std::fputs(std::format("error: {}\n", e.what()).c_str(), stderr);
+        return 1;
+    }
 }

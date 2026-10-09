@@ -6,10 +6,13 @@ target_include_directories(waferedge_synth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(waferedge_synth PUBLIC waferedge PRIVATE waferedge_options)
 
 add_executable(waferedge-tests
+  test_clusters.cpp
   test_features.cpp
   test_geometry.cpp
+  test_hough.cpp
   test_machine.cpp
-  test_map_file.cpp)
+  test_map_file.cpp
+  test_randomness.cpp)
 target_link_libraries(waferedge-tests
   PRIVATE waferedge waferedge_synth waferedge_options Catch2::Catch2WithMain)
 target_compile_definitions(waferedge-tests PRIVATE WAFEREDGE_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
