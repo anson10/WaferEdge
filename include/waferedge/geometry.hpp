@@ -18,6 +18,10 @@
 // 25 x 27 grid is a circle in millimetres). The normalised radius is
 //   rho^2 = (X / cols)^2 + (Y / rows)^2,   0 at the centre, 1 at the grid's inscribed edge.
 // Zones are equal-area rings: zone k holds k/K <= rho^2 < (k+1)/K, last zone open-ended.
+// Rings are a finer, equal-width radial profile: ring k holds k/R <= rho < (k+1)/R, last ring
+// open-ended (compared as k^2 / R^2 <= rho^2, still exact). Zones weigh area evenly (each
+// holds a fifth of the dies); rings resolve small structures near the centre, where an
+// equal-area zone 0 is already 45% of the radius.
 // Sectors are 45-degree octants counter-clockwise from +X, in the same normalised frame,
 // half-open so every die has exactly one sector; rotating a square map by 90 degrees moves
 // every die exactly two sectors on.
@@ -25,10 +29,12 @@ namespace waferedge {
 
 inline constexpr int kZones = 5;   // centre, three middle rings, edge (equal area)
 inline constexpr int kSectors = 8; // 45-degree octants
+inline constexpr int kRings = 10;  // equal-width radial rings, 0.1 of the radius each
 
 // Exact zone and sector of a die, from the formulas above. Exposed for tests.
 [[nodiscard]] int zone_of(int row, int col, int rows, int cols) noexcept;
 [[nodiscard]] int sector_of(int row, int col, int rows, int cols) noexcept;
+[[nodiscard]] int ring_of(int row, int col, int rows, int cols) noexcept;
 
 class Geometry {
 public:
@@ -39,12 +45,14 @@ public:
     // Row-major, one entry per grid position (off-wafer positions too).
     [[nodiscard]] std::span<const std::uint8_t> zones() const noexcept { return zones_; }
     [[nodiscard]] std::span<const std::uint8_t> sectors() const noexcept { return sectors_; }
+    [[nodiscard]] std::span<const std::uint8_t> rings() const noexcept { return rings_; }
 
 private:
     int rows_;
     int cols_;
     std::vector<std::uint8_t> zones_;
     std::vector<std::uint8_t> sectors_;
+    std::vector<std::uint8_t> rings_;
 };
 
 // Geometry per grid shape, built on first use. References stay valid for the cache's life.

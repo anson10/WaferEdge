@@ -1,0 +1,28 @@
+# Fitted by: waferedge-classify fit <wm811k_lot.wmap> config/rules.txt --none-weight 10.3342
+# on WM-811K's train split only (FabEye's lot-disjoint split; its train 'none' is
+# capped at 10,000 maps, weighted back to the uncapped count, see ADR-0005).
+# rule signal op threshold (first rule that holds wins; order is fixed)
+near_full density >= 0.7
+random density >= 0.41304347826086957
+random z <= 8.400273878371642
+edge_ring edge >= 2.3825136612021858
+edge_ring sector <= 1.5922953451043338
+edge_ring z >= 5.806206050007845
+edge_loc edge >= 1.854161091784854
+edge_loc sector >= 1.556338028169014
+edge_loc z >= 5.0128504519631845
+scratch_cluster elongation >= 3.924790723591553
+scratch_cluster line_length >= 0.43247468518977733
+scratch_cluster cluster_share >= 0.16390041493775934
+scratch_line line >= 5.151236342725705
+scratch_line line_length >= 0.28830659013871973
+scratch_line edge <= 1.854161091784854
+donut ring >= 2.1739094099949856
+donut inner <= 1.829268292682927
+donut z >= 6.227737271498747
+center inner >= 2.1922077922077925
+center cluster_rho <= 0.19086242915607105
+center z >= 2.1328703966259708
+loc cluster_size >= 0.005573248407643312
+loc cluster_rho <= 0.8307470472861923
+loc z >= 3.5190974135316146

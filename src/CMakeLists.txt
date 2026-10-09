@@ -1,4 +1,5 @@
 add_library(waferedge
+  classifier.cpp
   clusters.cpp
   features.cpp
   geometry.cpp

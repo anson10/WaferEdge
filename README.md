@@ -23,11 +23,11 @@ measured.
 
 ## Status
 
-Phase 1 of [the roadmap](ROADMAP.md) in progress: wafer maps load from both datasets
-([docs/data.md](docs/data.md)); the scalar detectors are in place: radial / angular features
-with exact integer geometry (ADR-0004), fail clusters, a Hough scratch search and a join-count
-randomness test ([docs/signatures.md](docs/signatures.md)). The rule classifier and its
-evaluation against ground truth and FabEye come next.
+Phase 1 of [the roadmap](ROADMAP.md): wafer maps load from both datasets
+([docs/data.md](docs/data.md)); the scalar detectors (zones, sectors, rings, clusters, a Hough
+scratch search, a join-count randomness test) feed an explainable rule classifier with
+thresholds fitted on WM-811K train ([docs/signatures.md](docs/signatures.md), ADR-0004,
+ADR-0005). The AVX2 backend comes next.
 
 ## Build
 
@@ -48,6 +48,17 @@ labelled `gpu` run locally (`ctest --preset cuda`).
 ## Measurements
 
 Every number here names the machine and the command that produced it.
+
+**Pattern classification** ([docs/evaluation.md](docs/evaluation.md)): macro-F1 on the same maps.
+
+| Data | Rules (WaferEdge) | CNN (FabEye) | Trivial (density threshold) |
+|---|---|---|---|
+| WM-811K test, lot-disjoint, 25,875 maps | 0.655 | 0.858 | 0.118 |
+| WaferLens, simulated, 24,090 maps | 0.645 | 0.909 | 0.132 |
+
+The CNN is clearly more accurate. The rules explain every call in one line and run at ~13k
+maps/s on one core; they hold up on none, edge-ring, center and near-full and lose on
+edge-loc, loc and scratch.
 
 *Machine A*: Ryzen 5 7535HS (6 cores, AVX2), RTX 3050 Laptop 6 GB (sm_86), WSL2 Ubuntu 22.04,
 CUDA 12.4, GCC 13.
