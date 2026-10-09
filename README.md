@@ -29,7 +29,7 @@ scratch search, a join-count randomness test, [docs/signatures.md](docs/signatur
 an explainable rule classifier evaluated against FabEye's CNN
 ([docs/evaluation.md](docs/evaluation.md)); the feature counts also run on AVX2
 ([docs/avx2.md](docs/avx2.md)). Phase 2a (CUDA) is under way: the feature counts run on the
-GPU in batches ([docs/gpu.md](docs/gpu.md)).
+GPU in batches, and the Hough transform 26–84× faster than one CPU core ([docs/gpu.md](docs/gpu.md)).
 
 ## Build
 
@@ -60,7 +60,19 @@ Every number here names the machine and the command that produced it.
 | 1,024 | 871k | 1.44M | 709 µs |
 | 65,536 | ~0.9M | ~1.6M | 41 ms (kernel 3 ms, CPU packing 26 ms) |
 
-`build/cuda/bench/bench-gpu`. The GPU's kernel is fast; moving the maps there is not.
+**Hough transform on the GPU** (scratch search, 180 votes per fail die), same benchmark:
+
+| Batch | CPU, 1 thread | GPU | GPU latency |
+|---|---|---|---|
+| 1 | 14.6k maps/s | 5.0k | 199 µs |
+| 4 | 14.1k | 20.8k | 192 µs |
+| 1,024 | 14.5k | 1.22M | 842 µs |
+
+Real data, every copy included: WaferLens 651k vs 19.9k maps/s, WM-811K 401k vs 15.4k
+(`build/cuda/tools/waferedge-maps <file>`, which also checks GPU == CPU on every map).
+
+`build/cuda/bench/bench-gpu`. Counting features is too little work per byte to win over PCIe;
+the Hough transform is enough.
 
 **Pattern classification** ([docs/evaluation.md](docs/evaluation.md)): macro-F1 on the same maps.
 

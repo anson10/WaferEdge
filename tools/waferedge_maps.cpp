@@ -9,7 +9,7 @@
 #include "waferedge/backend.hpp"
 #include "waferedge/clusters.hpp"
 #include "waferedge/features.hpp"
-#include "waferedge/gpu_features.hpp"
+#include "waferedge/gpu_signatures.hpp"
 #include "waferedge/hough.hpp"
 #include "waferedge/machine.hpp"
 #include "waferedge/map_file.hpp"
@@ -156,7 +156,8 @@ int run(int argc, char** argv) {
     }
 
 #if WAFEREDGE_HAS_CUDA
-    // The GPU, in batches of 4096 maps: every map compared with scalar, both kernels timed.
+    // The GPU, in batches of 4096 maps: features (both kernels) and the Hough line, every map
+    // compared with the CPU, the GPU's time split by step (first pass: geometry uploads too).
     if (backend::Cuda::available()) {
         constexpr std::size_t kBatch = 4096;
         std::vector<WaferMapView> views;
@@ -165,44 +166,71 @@ int run(int argc, char** argv) {
             views.push_back(r.map);
             geometries.push_back(&cache.get(r.map.rows(), r.map.cols()));
         }
-        std::vector<Features> out(records.size());
-        for (const auto kernel :
-             {gpu::FeatureKernel::shared_atomics, gpu::FeatureKernel::warp_aggregated}) {
-            gpu::FeatureEngine engine(kernel);
+        std::vector<HoughLine> cpu_lines(records.size());
+        const auto cpu_start = std::chrono::steady_clock::now();
+        for (std::size_t i = 0; i < records.size(); ++i) {
+            cpu_lines[i] = hough.run(views[i]);
+        }
+        const double cpu_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - cpu_start).count();
+
+        struct Job {
+            const char* name;
+            gpu::FeatureKernel kernel;
+            bool features;
+            bool lines;
+        };
+        for (const Job job :
+             {Job{"features (shared atomics)", gpu::FeatureKernel::shared_atomics, true, false},
+              Job{"features (warp aggregated)", gpu::FeatureKernel::warp_aggregated, true, false},
+              Job{"hough", gpu::FeatureKernel::shared_atomics, false, true},
+              Job{"features + hough", gpu::FeatureKernel::shared_atomics, true, true}}) {
+            gpu::SignatureEngine engine(job.kernel);
             engine.set_timing(true);
-            const auto name =
-                kernel == gpu::FeatureKernel::shared_atomics ? "shared atomics" : "warp aggregated";
-            double kernel_ms = 0;
-            double copy_ms = 0;
+            std::vector<Features> out(job.features ? records.size() : 0);
+            std::vector<HoughLine> lines(job.lines ? records.size() : 0);
+            gpu::RunTimings total{};
             const auto start = std::chrono::steady_clock::now();
             for (std::size_t at = 0; at < views.size(); at += kBatch) {
                 const auto n = std::min(kBatch, views.size() - at);
+                const auto f = job.features ? std::span(out).subspan(at, n) : std::span<Features>{};
+                const auto l = job.lines ? std::span(lines).subspan(at, n) : std::span<HoughLine>{};
                 if (!engine.run(std::span(views).subspan(at, n),
-                                std::span(geometries).subspan(at, n),
-                                std::span(out).subspan(at, n))) {
-                    print(std::format("cuda {}: {}\n", name, engine.error()));
+                                std::span(geometries).subspan(at, n), f, l)) {
+                    print(std::format("cuda {}: {}\n", job.name, engine.error()));
                     return 1;
                 }
                 const auto t = engine.last_timings();
-                kernel_ms += t.kernel_ms;
-                copy_ms += t.upload_ms + t.download_ms;
+                total.pack_ms += t.pack_ms;
+                total.upload_ms += t.upload_ms;
+                total.features_ms += t.features_ms;
+                total.hough_ms += t.hough_ms;
+                total.download_ms += t.download_ms;
             }
             const double seconds =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
             std::size_t differ = 0;
             for (std::size_t i = 0; i < records.size(); ++i) {
-                differ += out[i] == backend::Scalar::features(views[i], *geometries[i]) ? 0U : 1U;
+                if (job.features && out[i] != backend::Scalar::features(views[i], *geometries[i])) {
+                    ++differ;
+                } else if (job.lines && lines[i] != cpu_lines[i]) {
+                    ++differ;
+                }
             }
-            print(std::format("cuda {} features == scalar on {} of {} maps; one pass in batches of "
-                              "{}: {:.0f} maps/s end to end (first pass, geometry uploads "
-                              "included), kernels {:.1f} ms, copies {:.1f} ms of {:.1f} ms\n",
-                              name, records.size() - differ, records.size(), kBatch,
-                              static_cast<double>(records.size()) / seconds, kernel_ms, copy_ms,
-                              seconds * 1e3));
+            print(std::format(
+                "cuda {}: == cpu on {} of {} maps; {:.0f} maps/s end to end in batches of {} "
+                "(pack {:.1f}, upload {:.1f}, features {:.1f}, hough {:.1f}, download {:.1f} of "
+                "{:.1f} ms)\n",
+                job.name, records.size() - differ, records.size(),
+                static_cast<double>(records.size()) / seconds, kBatch, total.pack_ms,
+                total.upload_ms, total.features_ms, total.hough_ms, total.download_ms,
+                seconds * 1e3));
             if (differ != 0) {
                 return 1;
             }
         }
+        print(std::format("cpu hough, one thread: {:.0f} maps/s\n",
+                          static_cast<double>(records.size()) / cpu_seconds));
     }
 #endif
 

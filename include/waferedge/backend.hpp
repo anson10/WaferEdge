@@ -36,8 +36,8 @@ struct Avx2 {
     [[nodiscard]] static Features features(WaferMapView map, const Geometry& geometry) noexcept;
 };
 
-// The GPU, one map per call (a batch of one through gpu::FeatureEngine): for tests and the
-// batch-size-1 end of the crossover benchmark. Real use batches maps (gpu_features.hpp).
+// The GPU, one map per call (a batch of one through gpu::SignatureEngine): for tests and the
+// batch-size-1 end of the crossover benchmark. Real use batches maps (gpu_signatures.hpp).
 // Available in builds with the cuda preset on a GPU of compute capability 8.6 or newer.
 struct Cuda {
     static constexpr std::string_view name = "cuda";

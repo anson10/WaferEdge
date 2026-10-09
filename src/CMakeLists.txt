@@ -22,6 +22,10 @@ target_compile_definitions(waferedge
     WAFEREDGE_HAS_CUDA=$<BOOL:${WAFEREDGE_CUDA}>)
 
 if(WAFEREDGE_CUDA)
-  target_sources(waferedge PRIVATE gpu_info.cpp ${PROJECT_SOURCE_DIR}/cuda/features.cu)
+  target_sources(waferedge PRIVATE
+    gpu_info.cpp
+    ${PROJECT_SOURCE_DIR}/cuda/feature_kernels.cu
+    ${PROJECT_SOURCE_DIR}/cuda/hough_kernel.cu
+    ${PROJECT_SOURCE_DIR}/cuda/signature_engine.cu)
   target_link_libraries(waferedge PUBLIC CUDA::cudart)
 endif()
