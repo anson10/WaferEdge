@@ -25,25 +25,25 @@ Every phase ends green in CI, with tests and at least one measured number.
 ## Phase 0 — Foundation (1–2 days)
 
 Decisions first (ask the user, then record in ADRs):
-- [ ] C++ standard: install GCC 13 for C++23 (`std::expected`, `std::print`) or stay on C++20
-- [ ] CUDA learning mode: the user writes the kernels with guidance, or Claude writes them
+- [x] C++ standard: install GCC 13 for C++23 (`std::expected`, `std::print`) or stay on C++20
+- [x] CUDA learning mode: the user writes the kernels with guidance, or Claude writes them
 - [ ] GitHub repo `anson10/WaferEdge` created (ask before creating; public, MIT)
 
 Setup:
-- [ ] Layout: `include/waferedge/`, `src/`, `cuda/`, `tests/`, `bench/`, `fuzz/`, `tools/`,
+- [x] Layout: `include/waferedge/`, `src/`, `cuda/`, `tests/`, `bench/`, `fuzz/`, `tools/`,
       `python/`, `docs/adr/`, `docs/` (see docs/context.md for the module sketch)
-- [ ] CMake ≥ 3.25 with `CMakePresets.json`: `dev` (Debug, g++), `release`, `asan`, `tsan`,
+- [x] CMake ≥ 3.25 with `CMakePresets.json`: `dev` (Debug, g++), `release`, `asan`, `tsan`,
       `cuda` (CUDA on), `fuzz` (clang + libFuzzer); compilers pinned to `g++` / `gcc` in presets
-- [ ] Warnings as errors (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion`), clang-format,
+- [x] Warnings as errors (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion`), clang-format,
       clang-tidy config
-- [ ] FetchContent: Catch2 v3, Google Benchmark, Asio (standalone), fmt if on C++20
-- [ ] CI (GitHub Actions): GCC + Clang build/test, ASan/UBSan job, CUDA compile-only job
+- [x] FetchContent: Catch2 v3, Google Benchmark, Asio (standalone) (no fmt: C++23 has `std::format`)
+- [x] CI (GitHub Actions): GCC + Clang build/test, ASan/UBSan job, CUDA compile-only job
       (nvidia/cuda container or the CUDA toolkit action), later fuzz smoke run
-- [ ] pre-commit: whitespace, clang-format check
-- [ ] ADR-0001: why C++ (and which standard) and CUDA; ADR-0002: repo layout and backends
+- [x] pre-commit: whitespace, clang-format check
+- [x] ADR-0001: why C++ (and which standard) and CUDA; ADR-0002: repo layout and backends
       behind one interface; ADR-0003: dependency policy (FetchContent, pinned)
-- [ ] README skeleton: the question, the architecture sketch, status
-- [ ] CLAUDE.md "Commands" section filled in
+- [x] README skeleton: the question, the architecture sketch, status
+- [x] CLAUDE.md "Commands" section filled in
 
 ## Phase 1 — Wafer-map core, CPU (3–4 days)
 
