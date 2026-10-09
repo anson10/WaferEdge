@@ -39,6 +39,13 @@ inline constexpr int kRings = 10;  // equal-width radial rings, 0.1 of the radiu
 class Geometry {
 public:
     Geometry(int rows, int cols);
+    // Move-only: every Geometry has a unique id (the GPU caches its tables by id), and a copy
+    // would carry the same id with tables that may later differ.
+    Geometry(const Geometry&) = delete;
+    Geometry& operator=(const Geometry&) = delete;
+    Geometry(Geometry&&) noexcept = default;
+    Geometry& operator=(Geometry&&) noexcept = default;
+    ~Geometry() = default;
     // Explicit tables instead of the formulas: for tests that need a layout no wafer shape
     // produces (every die in one bucket), and for custom zone layouts. Preconditions: each
     // table has rows * cols entries, zones < kZones, sectors < kSectors, rings < kRings.
@@ -48,13 +55,16 @@ public:
 
     [[nodiscard]] int rows() const noexcept { return rows_; }
     [[nodiscard]] int cols() const noexcept { return cols_; }
+    // Unique per constructed Geometry in this process (never reused), kept across moves.
+    [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
     // Row-major, one entry per grid position (off-wafer positions too).
     [[nodiscard]] std::span<const std::uint8_t> zones() const noexcept { return zones_; }
     [[nodiscard]] std::span<const std::uint8_t> sectors() const noexcept { return sectors_; }
     [[nodiscard]] std::span<const std::uint8_t> rings() const noexcept { return rings_; }
 
 private:
-    Geometry() = default;
+    Geometry();
+    std::uint64_t id_;
     int rows_ = 0;
     int cols_ = 0;
     std::vector<std::uint8_t> zones_;

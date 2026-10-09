@@ -165,14 +165,4 @@ Features backend::Avx2::features(WaferMapView map, const Geometry& geometry) noe
 
 #endif
 
-FeaturesFn best_features() noexcept {
-    static const FeaturesFn best =
-        backend::Avx2::available() ? &backend::Avx2::features : &backend::Scalar::features;
-    return best;
-}
-
-std::string_view best_features_name() noexcept {
-    return backend::Avx2::available() ? backend::Avx2::name : backend::Scalar::name;
-}
-
 } // namespace waferedge

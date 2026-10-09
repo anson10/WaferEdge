@@ -67,7 +67,7 @@ BENCHMARK(BM_H2D_pinned)->Arg(one_map)->RangeMultiplier(16)->Range(4 << 10, 64 <
 } // namespace
 
 int main(int argc, char** argv) {
-    benchmark::AddCustomContext("waferedge", waferedge::describe_machine());
+    benchmark::AddCustomContext("machine", waferedge::describe_machine());
     benchmark::Initialize(&argc, argv);
     if (benchmark::ReportUnrecognizedArguments(argc, argv)) {
         return 1;

@@ -82,10 +82,11 @@ The domain model and classical spatial analysis, scalar first (the reference), t
 
 Same features and clustering as phase 1, batched on the GPU, tested equal to the scalar
 reference, profiled.
-- [ ] CUDA build integration (`CMAKE_CUDA_ARCHITECTURES 86`), a `Backend` concept the CPU and
+- [x] CUDA build integration (`CMAKE_CUDA_ARCHITECTURES 86`), a `Backend` concept the CPU and
       GPU paths both satisfy
-- [ ] Kernel 1: per-map features (radial / angular histograms) with **shared-memory atomics**,
-      one block per map; batches of N maps
+- [x] Kernel 1: per-map features (radial / angular histograms) with **shared-memory atomics**,
+      one block per map; batches of N maps (equal to scalar on all 103,698 real maps; a
+      warp-aggregated v2 measured 2x slower; crossover vs one AVX2 core at ~300 maps, docs/gpu.md)
 - [ ] Kernel 2: **connected-component labelling** on GPU (iterative union-find, e.g. the
       "label equivalence" / Playne–Hawick approach); compare with CPU union-find
 - [ ] Kernel 3: **Hough transform** voting with atomics, then a peak search

@@ -28,7 +28,8 @@ Phase 1 of [the roadmap](ROADMAP.md) is complete: wafer maps load from both data
 scratch search, a join-count randomness test, [docs/signatures.md](docs/signatures.md)) feed
 an explainable rule classifier evaluated against FabEye's CNN
 ([docs/evaluation.md](docs/evaluation.md)); the feature counts also run on AVX2
-([docs/avx2.md](docs/avx2.md)). Phase 2a (CUDA) is next.
+([docs/avx2.md](docs/avx2.md)). Phase 2a (CUDA) is under way: the feature counts run on the
+GPU in batches ([docs/gpu.md](docs/gpu.md)).
 
 ## Build
 
@@ -49,6 +50,17 @@ labelled `gpu` run locally (`ctest --preset cuda`).
 ## Measurements
 
 Every number here names the machine and the command that produced it.
+
+**Features on the GPU** ([docs/gpu.md](docs/gpu.md)), 40×40 maps, end to end per batch
+(pack, upload, kernel, download), `cuda` preset:
+
+| Batch | CPU AVX2, 1 thread | GPU | GPU latency |
+|---|---|---|---|
+| 1 | 936k maps/s | 4.8k | 208 µs |
+| 1,024 | 871k | 1.44M | 709 µs |
+| 65,536 | ~0.9M | ~1.6M | 41 ms (kernel 3 ms, CPU packing 26 ms) |
+
+`build/cuda/bench/bench-gpu`. The GPU's kernel is fast; moving the maps there is not.
 
 **Pattern classification** ([docs/evaluation.md](docs/evaluation.md)): macro-F1 on the same maps.
 

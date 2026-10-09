@@ -1,6 +1,7 @@
 #include "waferedge/geometry.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <utility>
@@ -29,6 +30,11 @@ Rho2 rho2(int row, int col, int rows, int cols) noexcept {
     const std::int64_t r2 = std::int64_t{rows} * rows;
     const std::int64_t c2 = std::int64_t{cols} * cols;
     return {x * x * r2 + y * y * c2, r2 * c2};
+}
+
+std::uint64_t next_geometry_id() noexcept {
+    static std::atomic<std::uint64_t> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
 }
 
 } // namespace
@@ -75,8 +81,10 @@ int sector_of(int row, int col, int rows, int cols) noexcept {
     return 2 * quadrant + (b >= a ? 1 : 0);
 }
 
+Geometry::Geometry() : id_(next_geometry_id()) {}
+
 Geometry::Geometry(int rows, int cols)
-    : rows_(rows), cols_(cols),
+    : id_(next_geometry_id()), rows_(rows), cols_(cols),
       zones_(static_cast<std::size_t>(rows) * static_cast<std::size_t>(cols)),
       sectors_(zones_.size()), rings_(zones_.size()) {
     std::size_t i = 0;

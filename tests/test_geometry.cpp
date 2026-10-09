@@ -114,3 +114,16 @@ TEST_CASE("the geometry cache builds each shape once") {
     CHECK(a.rows() == 30);
     CHECK(b.cols() == 24);
 }
+
+TEST_CASE("every Geometry has its own id, kept when moved") {
+    const Geometry a(10, 10);
+    const Geometry b(10, 10);
+    CHECK(a.id() != b.id());
+    Geometry c(5, 5);
+    const auto id = c.id();
+    const Geometry d = std::move(c);
+    CHECK(d.id() == id);
+    const auto e = Geometry::from_tables(1, 1, {0}, {0}, {0});
+    CHECK(e.id() != a.id());
+    CHECK(e.id() != d.id());
+}
