@@ -89,8 +89,69 @@ build/release/tools/waferedge-cnn verify data/fabeye_cnn.wcnn data/waferlens_dem
 build/release/tools/waferedge-cnn eval data/fabeye_cnn.wcnn data/wm811k_lot.wmap test
 ```
 
+## The GEMM ladder
+
+Every 3×3 convolution is a matrix multiply once the data is lined up (weights: C_out × C_in·9;
+input patches: C_in·9 × H·W·batch); ~97% of the CNN's arithmetic is GEMM. `cuda/gemm.cu`
+builds C = A·B (row-major) one rung at a time, each tested against a CPU reference that
+accumulates in double (`tests/test_gpu_gemm.cpp`: random matrices, sizes with partial tiles on
+every side; fp16 inputs rounded the same way on both sides for the tensor-core rung), and
+measured against cuBLAS (`bench/bench_gemm.cpp`; cuBLAS is linked into the benchmark only).
+
+| Rung | The idea |
+|---|---|
+| 1 Naive | a thread per element of C, A and B read from global memory |
+| 2 Tiled | 32×32 tiles of A and B in shared memory, each value used by 32 threads |
+| 3 Register-blocked | 128×128 block tiles; each thread computes an 8×8 patch in registers: 16 shared loads feed 64 multiply-adds (0.25 per FMA instead of 2) |
+| 4 Vectorised | rung 3 with `float4` global loads and A transposed in shared memory (two `float4` reads for a thread's 8 values) |
+| 5 Tensor cores | WMMA: fp16 A and B, fp32 accumulation; 4 warps own a 64×64 tile, each `mma_sync` does a 16×16×16 product |
+
+### Measuring on a laptop GPU: count cycles, not seconds
+
+Under load this GPU runs at ~0.96–1.28 GHz, not its 2.1 GHz maximum, throttled by its power cap
+and temperature (`nvidia-smi` reports throttle reasons 0x24: software power cap + thermal
+slowdown). The clock depends on the kernel and on what ran before, so two kernels timed in
+seconds may have run at different clocks. Even Nsight Compute's clock lock doesn't hold here:
+our tensor-core kernel and cuBLASLt's ran at 1.15 and 0.96 GHz in the same session. A first
+wall-clock comparison put our tensor-core kernel 5–23% *ahead* of cuBLAS; in cycles it is
+behind. **Comparisons below are cycles** (`ncu --metrics sm__cycles_elapsed.max`, one launch
+of each kernel at 2048³), which don't depend on the clock.
+
+| Rung (2048³) | Cycles | FLOP / cycle | vs cuBLAS, same precision |
+|---|---|---|---|
+| 1 Naive | 54.6M | 314 | 10% |
+| 2 Tiled | 46.2M | 372 | 12% |
+| 3 Register-blocked | 10.3M | 1,671 | 53% |
+| 4 Vectorised | 7.53M | 2,281 | 72% |
+| cuBLAS `sgemm` (fp32) | 5.43M | 3,165 | 100% |
+| 5 Tensor cores (WMMA, fp16 → fp32) | 2.16M | 7,950 | **92%** (2.5× cuBLAS fp32) |
+| cuBLAS `GemmEx` / cuBLASLt best (fp16 → fp32) | 2.00M | 8,590 | 100% |
+
+At 4096³ the tensor-core rung is ~80% of cuBLASLt's best (17.4M vs 14.0M cycles): cuBLAS's
+kernel (CUTLASS `s16816gemm_f16_256x128_32x3`) uses 256×128 tiles, 218 registers per thread, a
+3-stage `cp.async` pipeline (next tiles load while the current ones compute) and has no
+shared-memory bank conflicts; ours has 64×64 tiles, one stage and 20M bank conflicts. Those
+are the next rungs if the conv kernels need them.
+
+### Why each rung is faster (Nsight Compute, 2048³)
+
+| | Load/store pipe | FMA pipe | Top stall | |
+|---|---|---|---|---|
+| 1 Naive | 99% | 19% | lg_throttle 56% (global load queue full) | L1 hit rate 87%: the cache does the reuse the code doesn't |
+| 2 Tiled | 81% | 8% | mio_throttle 58% (shared-memory queue full) | 2 shared loads per FMA; 1,024-thread blocks: 67% occupancy |
+| 3 Register-blocked | 51% | 39% | not_selected / selected (ready to issue) | 112 registers: 32% occupancy; 67M bank conflicts |
+| 4 Vectorised | 30% | 48% | not_selected, short_scoreboard | bank conflicts halved (33.6M) by the transposed A |
+
+Rungs 1 and 2 are bound by the *number* of load instructions, not by DRAM bandwidth: tiling
+moved the queue from global to shared memory, which is why it gained only ~20%. Register
+blocking is the big step: the stalls turn from "waiting for memory" into "waiting for an issue
+slot", what a compute-bound kernel looks like.
+
+Wall-clock GFLOPS for reference (`bench-gemm`, median of 3; clocks vary, see above): at 4096³
+naive ~470, tiled ~610, register-blocked ~2,650, vectorised ~3,600, cuBLAS sgemm ~4,150; tensor
+cores 6,000–11,300 depending on the clock, cuBLAS fp16 ~10,000–11,700.
+
 ## Next
 
-The GEMM ladder on the GPU (naive → shared-memory tiling → register blocking → vectorised
-loads → tensor cores), each step measured as % of cuBLAS, then convolution as implicit GEMM,
-fusion and int8.
+Convolution as implicit GEMM on top of these kernels, fusion (conv + bias + ReLU + pool), then
+int8.

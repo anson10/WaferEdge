@@ -123,10 +123,11 @@ facts (layers, preprocessing, calibration) are in docs/context.md.
       pool, linear, softmax; **matches ONNX Runtime's logits** on 1,000 maps (max abs diff
       tolerance stated) (max |Δ| 7.6e-6 / 8.6e-6, same class on all 1,500; macro-F1 0.858 on the
       full test split, = FabEye's)
-- [ ] **GEMM ladder** (the CUDA learning core): naive → shared-memory tiling → register
+- [x] **GEMM ladder** (the CUDA learning core): naive → shared-memory tiling → register
       blocking → vectorised loads → **tensor cores** (WMMA / `mma.sync`, fp16 in, fp32 accumulate);
       each step benchmarked against cuBLAS (% of cuBLAS throughput), cuBLAS used only as the
-      yardstick
+      yardstick (in cycles at 2048³: 10% / 12% / 53% / 72% of cuBLAS fp32; WMMA 92% of cuBLASLt's
+      best fp16 kernel; docs/inference.md)
 - [ ] Convolution as **implicit GEMM** on top of it; **fused** conv + bias + ReLU (+ maxpool)
       kernels; layer timings before/after fusion
 - [ ] **int8 quantisation**: per-channel weight scales, activation scales calibrated on held-out
