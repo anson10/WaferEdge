@@ -14,7 +14,8 @@ add_executable(waferedge-tests
   test_hough.cpp
   test_machine.cpp
   test_map_file.cpp
-  test_randomness.cpp)
+  test_randomness.cpp
+  test_thread_pool.cpp)
 target_link_libraries(waferedge-tests
   PRIVATE waferedge waferedge_synth waferedge_options Catch2::Catch2WithMain)
 target_compile_definitions(waferedge-tests PRIVATE

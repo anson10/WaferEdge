@@ -107,8 +107,9 @@ the machine, and the design sketch. Read both before starting work.
 - `ctest --preset cuda-cpu`: the CUDA build's tests without the `gpu` label (what CI runs).
 - `build/<preset>/tools/waferedge-info`: the build and machine; quote it with any number.
 - `build/cuda/bench/bench-transfer`: host→device copy bandwidth, pageable vs pinned.
-- `build/cuda/bench/bench-gpu`: CPU vs GPU features and Hough by batch size (`_timed`
-  variants split pack / upload / kernel / download). `ctest --preset cuda -L gpu`: GPU tests.
+- `build/cuda/bench/bench-gpu`: CPU (1 / 6 / 12 threads) vs GPU for each signature and all
+  three, by batch size (`_timed` variants split pack / upload / kernel / download).
+  `ctest --preset cuda -L gpu`: GPU tests.
 - `ncu --set full --kernel-name regex:<kernel> --launch-skip 1 --launch-count 1 -o <out> <binary>`
   then `ncu -i <out>.ncu-rep`: one kernel's profile (write reports outside the repo).
 - GPU tools on WSL2: `nsys profile -t cuda` works (CPU side of CUDA calls only); `ncu` works

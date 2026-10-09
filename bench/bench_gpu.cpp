@@ -1,4 +1,5 @@
-// CPU vs GPU by batch size, for the features and the Hough line: where does the GPU pay off?
+// CPU vs GPU by batch size, for each signature and all three together: where does the GPU pay
+// off, against one CPU core and against the whole CPU (6 cores, 12 threads)?
 //
 //   build/cuda/bench/bench-gpu --benchmark_repetitions=5 --benchmark_report_aggregates_only=true
 //
@@ -12,9 +13,12 @@
 #include "waferedge/gpu_signatures.hpp"
 #include "waferedge/hough.hpp"
 #include "waferedge/machine.hpp"
+#include "waferedge/thread_pool.hpp"
 
 #include <benchmark/benchmark.h>
 
+#include <algorithm>
+#include <chrono>
 #include <vector>
 
 namespace {
@@ -201,6 +205,67 @@ void BM_gpu_all_signatures(benchmark::State& state) {
     run_gpu_signatures(state, true);
 }
 
+// The whole CPU: a thread pool, ~4 chunks per thread (at most 64 maps a chunk) so small
+// batches still spread, per-thread Hough and cluster scratch. all_three = false: AVX2 features
+// only; true: features + Hough + clusters, the GPU's all-signatures workload.
+void run_cpu_threads(benchmark::State& state, bool all_three) {
+    const auto n = static_cast<std::size_t>(state.range(0));
+    const auto threads = static_cast<unsigned>(state.range(1));
+    const auto spin = std::chrono::microseconds{state.range(2)};
+    const Geometry geometry(kSide, kSide);
+    const auto& all = maps();
+    ThreadPool pool(threads, spin);
+    struct Scratch {
+        HoughTransform hough;
+        ClusterFinder clusters;
+    };
+    std::vector<Scratch> scratch(pool.size());
+    std::vector<Features> features(n);
+    std::vector<HoughLine> lines(n);
+    std::vector<ClusterSummary> clusters(n);
+    const auto features_fn = best_features();
+    const std::size_t grain = std::clamp<std::size_t>(n / (4 * pool.size()), 1, 64);
+    for (auto _ : state) {
+        pool.for_each(n, grain, [&](unsigned worker, std::size_t begin, std::size_t end) noexcept {
+            auto& s = scratch[worker];
+            for (std::size_t i = begin; i < end; ++i) {
+                features[i] = features_fn(all[i], geometry);
+                if (all_three) {
+                    lines[i] = s.hough.run(all[i]);
+                    s.clusters.run(all[i]);
+                    clusters[i] = s.clusters.summary();
+                }
+            }
+        });
+        benchmark::DoNotOptimize(features.data());
+        benchmark::DoNotOptimize(lines.data());
+        benchmark::DoNotOptimize(clusters.data());
+    }
+    state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(n));
+}
+
+void BM_cpu_features_threads(benchmark::State& state) {
+    run_cpu_threads(state, false);
+}
+
+void BM_cpu_all_signatures_threads(benchmark::State& state) {
+    run_cpu_threads(state, true);
+}
+
+// spin_us 0: workers sleep between batches; 200: they spin up to 200 us first (back-to-back
+// batches in a benchmark loop then never sleep).
+void cpu_batches(benchmark::internal::Benchmark* b, std::int64_t max_batch) {
+    for (const std::int64_t spin : {0, 200}) {
+        for (const std::int64_t threads : {1, 6, 12}) {
+            for (std::int64_t n = 1; n <= max_batch; n *= 4) {
+                if (threads > 1 || spin == 0) {
+                    b->Args({n, threads, spin});
+                }
+            }
+        }
+    }
+}
+
 void batches(benchmark::internal::Benchmark* b) {
     for (std::int64_t n = 1; n <= static_cast<std::int64_t>(kMaxBatch); n *= 4) {
         b->Arg(n);
@@ -217,6 +282,12 @@ BENCHMARK(BM_gpu_hough)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_cpu_clusters)->RangeMultiplier(4)->Range(1, 16384)->UseRealTime();
 BENCHMARK(BM_gpu_clusters)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_gpu_all_signatures)->Apply(batches)->UseRealTime();
+BENCHMARK(BM_cpu_features_threads)->Apply([](auto* b) {
+    cpu_batches(b, 65536);
+}) -> ArgNames({"batch", "threads", "spin_us"}) -> UseRealTime();
+BENCHMARK(BM_cpu_all_signatures_threads)->Apply([](auto* b) {
+    cpu_batches(b, 16384);
+}) -> ArgNames({"batch", "threads", "spin_us"}) -> UseRealTime();
 BENCHMARK(BM_gpu_shared_atomics_timed)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_gpu_warp_aggregated_timed)->Apply(batches)->UseRealTime();
 

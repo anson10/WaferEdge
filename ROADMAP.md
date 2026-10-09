@@ -99,11 +99,13 @@ reference, profiled.
 - [x] Profiling with Nsight Compute / Systems: occupancy, memory throughput, a roofline-style
       explanation of each kernel's bound; one optimisation iteration with before/after numbers
       (v1 LSU-bound, v2 2x slower explained; Hough −33% from removing a barrier-bound chunk)
-- [ ] Benchmark: throughput (maps/s) and latency per batch for CPU scalar, CPU AVX2 (all
+- [x] Benchmark: throughput (maps/s) and latency per batch for CPU scalar, CPU AVX2 (all
       threads), GPU, across batch sizes 1 … 65,536; **find the crossover batch size**
+      (all signatures: GPU passes the whole CPU at ~16 maps, ~9.4× at large batches)
 - [ ] `docs/gpu.md`: what each kernel does, the profile, the crossover, and the latency vs
       throughput trade-off of batching
-- [ ] ADR: GPU batching strategy (fixed batch, deadline-based, or adaptive)
+- [x] ADR-0007: GPU batching strategy (fixed batch, deadline-based, or adaptive): placement by
+      measured cost, batches close at 4,096 maps or a 2 ms deadline
 
 ## Phase 2b — Inference engine: FabEye's CNN on our own kernels (5–7 days)
 
