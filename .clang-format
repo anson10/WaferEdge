@@ -1,0 +1,18 @@
+# clang-format 18. Run: clang-format-18 -i <files>, or let pre-commit do it.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+AccessModifierOffset: -4
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortLambdasOnASingleLine: All
+AlwaysBreakTemplateDeclarations: Yes
+DerivePointerAlignment: false
+PointerAlignment: Left
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^"'               # this project
+    Priority: 1
+  - Regex: '^<(catch2|benchmark|asio|cuda|pybind11)'
+    Priority: 2
+  - Regex: '^<'               # standard library
+    Priority: 3

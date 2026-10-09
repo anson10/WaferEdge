@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    # ubuntu-24.04 ships GCC 13 and Clang 18, the compilers the presets name. Clang 18 builds
+    # against libc++ 18: libstdc++ hides std::expected from Clang before 19 (ADR-0001).
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [dev, clang, release]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build libc++-18-dev libc++abi-18-dev
+      - name: Configure, build and test (warnings are errors)
+        run: cmake --workflow --preset ${{ matrix.preset }}
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [asan, tsan]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      # The runner's kernel randomises mmap with 32 bits, which TSan's shadow memory
+      # layout can't handle; 28 bits is the long-standing default.
+      - if: matrix.preset == 'tsan'
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - run: cmake --workflow --preset ${{ matrix.preset }}
+
+  cuda-compile:
+    # No GPU on GitHub's runners: compile the CUDA backend and run the CPU tests only.
+    # GPU tests (label "gpu") run locally: ctest --preset cuda.
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:12.4.1-devel-ubuntu22.04
+    steps:
+      # GCC 13 for the C++23 host code; nvcc uses the image's GCC 11 (ADR-0001).
+      - name: Install GCC 13, CMake and Ninja
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends software-properties-common git python3-pip
+          add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          apt-get install -y --no-install-recommends g++-13
+          pip3 install cmake==3.31.6 ninja==1.11.1.4
+      - uses: actions/checkout@v4
+      - run: cmake --preset cuda
+      - run: cmake --build --preset cuda
+      - run: ctest --preset cuda-cpu
+
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: pre-commit/action@v3.0.1

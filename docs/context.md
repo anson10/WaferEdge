@@ -96,21 +96,18 @@ Read from `~/FabEye`; never modify that repo.
 - **GPU: NVIDIA GeForce RTX 3050 6 GB Laptop, compute capability 8.6**, driver 551.76;
   **CUDA 12.4** installed at `/usr/local/cuda` (`nvcc` on PATH). Nsight tools: check / install
   in phase 2.
-- GCC 11.4 (system), CMake 4.x, Ninja, SFML 2.5 dev libs (not needed here). `c++` on PATH is a
-  SUMO wrapper: pin `g++` in presets.
+- GCC 11.4 (system, nvcc's host compiler), GCC 13.4 (`g++-13`), Clang 18.1 with libc++ 18
+  (apt.llvm.org), clang-format/clang-tidy 18, pre-commit, CMake 4.x, Ninja. `c++` on PATH is a
+  SUMO wrapper: the presets name every compiler.
 
-## Open decisions (ask the user at the start)
-1. **C++ standard**: install GCC 13 (`sudo add-apt-repository ppa:ubuntu-toolchain-r/test &&
-   sudo apt install g++-13`, user runs it) for C++23 (`std::expected`, `std::print`,
-   `std::mdspan` partly), or stay on C++20 with small polyfills. CUDA 12.4 accepts GCC ≤ 13.
-2. **CUDA learning mode**: the user writes the kernels with guidance (concept → steps →
-   reference values from the scalar backend to check against), or Claude writes them and the
-   user studies them. Suggested: the user writes kernels 1–3 with guidance; Claude does the
-   scaffolding, tests and benchmarks.
-3. **Repo**: create `anson10/WaferEdge` on GitHub (public, MIT) at the end of phase 0, after
-   asking.
-4. **Phase 6 (LLM note)** is a stretch goal: decide after phase 5 whether to do it, and which
-   small model (Qwen2.5 0.5B/1.5B or TinyLlama 1.1B; check the licence).
+## Decisions taken (2026-10-09)
+1. **C++ standard**: C++23 on GCC 13 (PPA, 13.4). GCC 13 has `std::expected` and
+   `std::format` but not `std::print` (GCC 14) or `std::mdspan`. Details and the two
+   toolchain workarounds (GCC 11 under nvcc, libc++ for Clang 18) are in ADR-0001.
+2. **CUDA learning mode**: Claude writes the kernels and explains them; the user studies them.
+3. **Repo**: `anson10/WaferEdge`, public, MIT, created at the end of phase 0.
+4. **Phase 6 (LLM note)** is still a stretch goal: decide after phase 5 whether to do it, and
+   which small model (Qwen2.5 0.5B/1.5B or TinyLlama 1.1B; check the licence).
 
 ## Design sketch (to be refined in ADRs)
 - `waferedge::core`: `WaferMap` (bin grid + metadata), views, loaders.
