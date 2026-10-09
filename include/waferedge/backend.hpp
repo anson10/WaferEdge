@@ -36,14 +36,25 @@ struct Avx2 {
     [[nodiscard]] static Features features(WaferMapView map, const Geometry& geometry) noexcept;
 };
 
+// The GPU, one map per call (a batch of one through gpu::FeatureEngine): for tests and the
+// batch-size-1 end of the crossover benchmark. Real use batches maps (gpu_features.hpp).
+// Available in builds with the cuda preset on a GPU of compute capability 8.6 or newer.
+struct Cuda {
+    static constexpr std::string_view name = "cuda";
+    [[nodiscard]] static bool available() noexcept;
+    [[nodiscard]] static Features features(WaferMapView map, const Geometry& geometry) noexcept;
+};
+
 } // namespace backend
 
 static_assert(FeatureBackend<backend::Scalar>);
 static_assert(FeatureBackend<backend::Avx2>);
+static_assert(FeatureBackend<backend::Cuda>);
 
 using FeaturesFn = Features (*)(WaferMapView, const Geometry&) noexcept;
 
-// The fastest backend this CPU runs, chosen once.
+// The fastest CPU backend this machine runs, chosen once. Never the GPU: one map at a time,
+// a GPU call costs far more than the CPU's microsecond per map (docs/gpu.md).
 [[nodiscard]] FeaturesFn best_features() noexcept;
 [[nodiscard]] std::string_view best_features_name() noexcept;
 

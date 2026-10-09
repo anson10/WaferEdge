@@ -76,7 +76,7 @@ BENCHMARK(BM_join_count_scalar)->Arg(24)->Arg(30)->Arg(40)->Arg(64);
 } // namespace
 
 int main(int argc, char** argv) {
-    benchmark::AddCustomContext("waferedge", describe_machine());
+    benchmark::AddCustomContext("machine", describe_machine());
     benchmark::Initialize(&argc, argv);
     if (benchmark::ReportUnrecognizedArguments(argc, argv)) {
         return 1;

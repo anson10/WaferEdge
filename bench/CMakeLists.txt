@@ -6,6 +6,10 @@ if(WAFEREDGE_TESTS)
 endif()
 
 if(WAFEREDGE_CUDA)
+  add_executable(bench-gpu bench_gpu.cpp)
+  target_link_libraries(bench-gpu PRIVATE waferedge waferedge_synth waferedge_options
+                        benchmark::benchmark)
+
   add_executable(bench-transfer bench_transfer.cpp)
   target_link_libraries(bench-transfer PRIVATE waferedge waferedge_options CUDA::cudart
                         benchmark::benchmark)
