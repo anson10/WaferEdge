@@ -47,32 +47,92 @@ __global__ void preprocess_kernel(const detail::MapDesc* descs, const std::uint8
 }
 
 // ---- the implicit-GEMM gather ------------------------------------------------------------------
+// K is ordered tap-major (the engine reorders the weights): k = tap * in_channels + channel,
+// tap = ky * 3 + kx. Element (k, p) of the patch matrix P is input channel `channel` at
+// (y + ky - 1, x + kx - 1) around pixel p, or 0 in the zero padding; it is never stored, only
+// read while a tile is staged.
+//
+// Why tap-major: every layer but the first has a multiple of 32 input channels, so a K step
+// (8, 16 or 32 deep) lies inside one tap. The tap, its bounds check and its address offset are
+// then the same for the whole step, and each element is one load at a fixed stride (one
+// channel plane) from the last. Channel-major order (PyTorch's) changes tap every element:
+// two divisions, four compares and a 64-bit address per element.
 
-// One output pixel of a layer, p = image * side^2 + y * side + x, decomposed once per thread.
+// One output pixel, decomposed once per thread: its offset in channel 0 and which of its 9
+// taps fall inside the image (bit tap; all 0 for a pixel past the end of the batch).
 struct Pixel {
-    int image;
-    int y;
-    int x;
+    int base;
+    unsigned taps;
 };
 
-__device__ Pixel decompose(int p, int side) {
+__device__ Pixel pixel_of(int p, bool valid, int side) {
     const int plane = side * side;
-    return {p / plane, (p % plane) / side, p % side};
+    const int image = p / plane;
+    const int y = (p % plane) / side;
+    const int x = p % side;
+    unsigned taps = 0;
+    for (int tap = 0; tap < 9; ++tap) {
+        const int yy = y + tap / 3 - 1;
+        const int xx = x + tap % 3 - 1;
+        if (valid && yy >= 0 && yy < side && xx >= 0 && xx < side) {
+            taps |= 1U << tap;
+        }
+    }
+    return {image * plane + y * side + x, taps};
 }
 
-// Element (k, p) of the patch matrix P: input channel k / 9 at offset (ky, kx) = (k % 9) / 3,
-// (k % 9) % 3 around pixel p, or 0 in the zero padding. Never stored: read from the
-// activations while a tile is staged.
-template <typename T>
-__device__ T patch(const T* in, int k, Pixel px, int images, int side) {
-    const int channel = k / 9;
-    const int tap = k % 9;
-    const int yy = px.y + tap / 3 - 1;
-    const int xx = px.x + tap % 3 - 1;
-    if (yy < 0 || yy >= side || xx < 0 || xx >= side) {
-        return static_cast<T>(0.0F);
+// Offset of a tap's input pixel relative to the output pixel, within one channel plane.
+__device__ int tap_delta(int tap, int side) {
+    return (tap / 3 - 1) * side + tap % 3 - 1;
+}
+
+// A convolution's grid is 1-D: block b computes output-channel tile b % m_tiles of pixel tile
+// b / m_tiles. Blocks run roughly in index order, so the blocks that read the same input
+// pixels (all channel tiles of a pixel tile) run together and share it through L2; with the
+// pixel tile as the fast index, each channel tile re-read the whole input from DRAM (4x for
+// the 256-channel layer, whose 4 MB input at batch 256 doesn't fit the 2 MB L2).
+struct Tile {
+    int m0;
+    int n0;
+};
+
+__device__ Tile tile_of(int out_channels, int bm, int bn) {
+    const int m_tiles = (out_channels + bm - 1) / bm;
+    const int b = static_cast<int>(blockIdx.x);
+    return {(b % m_tiles) * bm, (b / m_tiles) * bn};
+}
+
+// Gathers rows kk0 + j * step (j < rows) of a K step starting at k0, for one pixel: store(j,
+// value), j a compile-time index once unrolled (so callers can pack values in registers).
+// `channel_stride` is images * side^2 (activations are [channel][image][y][x], so one channel
+// plane). Uniform case (in_channels a multiple of the step): one tap for all rows. Otherwise (the
+// first layer, 3 channels; K padded past 27): per element, a tap of 9 or more has no bit in `taps`
+// and reads as 0.
+template <typename T, int kRows, int kStep, typename Store>
+__device__ void gather(const T* in, int k0, int kk0, int in_channels, bool uniform, Pixel px,
+                       int channel_stride, int side, Store store) {
+    if (uniform) {
+        const int tap = k0 / in_channels;
+        const bool inside = (px.taps >> tap) & 1U;
+        const int off =
+            (k0 - tap * in_channels + kk0) * channel_stride + px.base + tap_delta(tap, side);
+#pragma unroll
+        for (int j = 0; j < kRows; ++j) {
+            store(j, inside ? in[off + j * kStep * channel_stride] : static_cast<T>(0.0F));
+        }
+    } else {
+#pragma unroll
+        for (int j = 0; j < kRows; ++j) {
+            const int k = k0 + kk0 + j * kStep;
+            const int tap = k / in_channels;
+            const bool inside = (px.taps >> tap) & 1U; // tap <= 31 / 3: in range of the shift
+            store(
+                j,
+                inside
+                    ? in[(k - tap * in_channels) * channel_stride + px.base + tap_delta(tap, side)]
+                    : static_cast<T>(0.0F));
+        }
     }
-    return in[((static_cast<std::size_t>(channel) * images + px.image) * side + yy) * side + xx];
 }
 
 // ---- fp32 convolution: register-blocked implicit GEMM -------------------------------------------
@@ -96,20 +156,16 @@ __global__ void __launch_bounds__(kThreads)
     const int n_total = s.images * s.side * s.side;
     const int k_total = s.in_channels * 9;
     const int t = static_cast<int>(threadIdx.x);
-    const int m0 = static_cast<int>(blockIdx.y) * kBM;
-    const int n0 = static_cast<int>(blockIdx.x) * kBN;
+    const auto [m0, n0] = tile_of(s.out_channels, kBM, kBN);
     const int tm = (t / (kBN / kTN)) * kTM;
     const int tn = (t % (kBN / kTN)) * kTN;
 
-    // Each thread stages the same 2 columns of the patch tile at every step: decompose their
-    // pixels once.
-    Pixel px[2];
-    bool valid[2];
-    for (int j = 0; j < 2; ++j) {
-        const int p = n0 + (t + j * kThreads) % kBN;
-        valid[j] = p < n_total;
-        px[j] = decompose(valid[j] ? p : 0, s.side);
-    }
+    // Each thread stages the same column of the patch tile (256 threads, 64 columns) at
+    // every step, rows t / 64 and t / 64 + 4: decompose its pixel once.
+    const int my_col = t % kBN;
+    const Pixel px = pixel_of(n0 + my_col, n0 + my_col < n_total, s.side);
+    const int channel_stride = n_total;
+    const bool uniform = s.in_channels % kBK == 0;
 
     float acc[kTM][kTN] = {};
     for (int k0 = 0; k0 < k_total; k0 += kBK) {
@@ -120,11 +176,10 @@ __global__ void __launch_bounds__(kThreads)
             const int m = m0 + r;
             const int k = k0 + kk;
             ws[kk][r] = (m < m_total && k < k_total) ? weight[m * k_total + k] : 0.0F;
-            const int pk = i / kBN; // patch tile: 8 rows x 64
-            const int k_p = k0 + pk;
-            ps[pk][i % kBN] =
-                (valid[j] && k_p < k_total) ? patch(in, k_p, px[j], s.images, s.side) : 0.0F;
         }
+        gather<float, 2, kThreads / kBN>(
+            in, k0, t / kBN, s.in_channels, uniform, px, channel_stride, s.side,
+            [&](int j, float v) { ps[t / kBN + j * (kThreads / kBN)][my_col] = v; });
         __syncthreads();
         for (int kk = 0; kk < kBK; ++kk) {
             const float4 a = *reinterpret_cast<const float4*>(&ws[kk][tm]);
@@ -158,13 +213,16 @@ __global__ void __launch_bounds__(kThreads)
     }
 }
 
-// ---- fp16 convolution: tensor-core implicit GEMM
-// ------------------------------------------------- The GEMM ladder's WMMA rung with the patch
-// gather: 4 warps own a 64 x 64 tile, each warp a 32 x 32 quarter (2 x 2 fragments of 16 x 16 x
-// 16); per step of 32 along K the weights' tile is copied 16 bytes at a time (rows padded to a
-// multiple of 32) and the patches' tile is gathered element by element. The epilogue goes through
-// shared memory: fragments' element order is opaque, so they are stored to a float tile first, then
-// bias + ReLU are applied and the result is written as fp16.
+// ---- fp16 convolution: tensor-core implicit GEMM ------------------------------------------------
+// The GEMM ladder's WMMA rung with the patch gather: 4 warps own a 64 x 64 tile, each warp a
+// 32 x 32 quarter (2 x 2 fragments of 16 x 16 x 16). Per step of 32 along K, the weights' tile
+// is copied 16 bytes at a time (rows padded to a multiple of 32) and the patches' tile is
+// gathered. The patch tile is stored transposed, ps[pixel][k] (read as a column-major
+// fragment): thread t gathers 16 consecutive k of pixel t % 64, packs them and writes two
+// 16-byte stores; 80-byte rows put 8 lanes' stores in 8 different groups of banks. (Row-major
+// ps[k][pixel] took one 2-byte store per element.) The epilogue goes fragment by fragment
+// through a per-warp scratch: fragments' element order is opaque, so each is stored as floats,
+// then bias + ReLU are applied and the result is written as fp16.
 constexpr int kWmma = 16;
 constexpr int kTcBM = 64;
 constexpr int kTcBN = 64;
@@ -178,23 +236,25 @@ __global__ void __launch_bounds__(kTcThreads)
               __half* out) {
     namespace wmma = nvcuda::wmma;
     __shared__ alignas(32) __half ws[kTcBM][kTcBK + kTcPad];
-    __shared__ alignas(32) __half ps[kTcBK][kTcBN + kTcPad];
-    __shared__ alignas(32) float cs[kTcBM][kTcBN + 4];
+    __shared__ alignas(32) __half ps[kTcBN][kTcBK + kTcPad]; // transposed: ps[pixel][k]
+    // The epilogue's per-warp scratch reuses ws (free after the K loop's last barrier).
+    static_assert(sizeof(ws) >= sizeof(float) * (kTcThreads / 32) * kWmma * (kWmma + 4));
+    auto& cs = *reinterpret_cast<float(*)[kTcThreads / 32][kWmma][kWmma + 4]>(&ws[0][0]);
     const int m_total = s.out_channels;
     const int n_total = s.images * s.side * s.side;
-    const int k_total = s.in_channels * 9;
     const int t = static_cast<int>(threadIdx.x);
     const int warp = t / 32;
+    const int lane = t % 32;
     const int warp_m = (warp / 2) * 32;
     const int warp_n = (warp % 2) * 32;
-    const int m0 = static_cast<int>(blockIdx.y) * kTcBM;
-    const int n0 = static_cast<int>(blockIdx.x) * kTcBN;
+    const auto [m0, n0] = tile_of(s.out_channels, kTcBM, kTcBN);
+    const bool warp_has_rows = m0 + warp_m < m_total;
 
-    // The patch tile is 32 x 64: thread t always gathers column t % 64, rows t / 64 + 2 j.
+    // Thread t gathers k [16 * (t / 64), + 16) of pixel n0 + t % 64 at every step.
     const int my_col = t % kTcBN;
-    const int p = n0 + my_col;
-    const bool valid = p < n_total;
-    const Pixel px = decompose(valid ? p : 0, s.side);
+    const int half = t / kTcBN;
+    const Pixel px = pixel_of(n0 + my_col, n0 + my_col < n_total, s.side);
+    const bool uniform = s.in_channels % kTcBK == 0;
 
     wmma::fragment<wmma::accumulator, kWmma, kWmma, kWmma, float> acc[2][2];
     for (auto& row : acc) {
@@ -212,18 +272,23 @@ __global__ void __launch_bounds__(kTcThreads)
                 m < m_total ? *reinterpret_cast<const uint4*>(&weight[m * padded_k + k0 + kk])
                             : zero;
         }
-        for (int kk = t / kTcBN; kk < kTcBK; kk += kTcThreads / kTcBN) { // patches: gathered
-            const int k = k0 + kk;
-            ps[kk][my_col] =
-                (valid && k < k_total) ? patch(in, k, px, s.images, s.side) : __float2half(0.0F);
-        }
+        unsigned packed[8] = {};
+        gather<__half, 16, 1>(
+            in, k0, half * 16, s.in_channels, uniform, px, n_total, s.side, [&](int j, __half v) {
+                packed[j / 2] |= static_cast<unsigned>(__half_as_ushort(v)) << (16 * (j % 2));
+            });
+        auto* dst = reinterpret_cast<uint4*>(&ps[my_col][half * 16]);
+        dst[0] = make_uint4(packed[0], packed[1], packed[2], packed[3]);
+        dst[1] = make_uint4(packed[4], packed[5], packed[6], packed[7]);
         __syncthreads();
-        for (int kk = 0; kk < kTcBK; kk += kWmma) {
+        // Layers with 32 output channels fill half the 64-row tile: warps whose rows are all
+        // padding skip the multiply (warp-uniform, no divergence) but still stage and sync.
+        for (int kk = 0; kk < kTcBK && warp_has_rows; kk += kWmma) {
             wmma::fragment<wmma::matrix_a, kWmma, kWmma, kWmma, __half, wmma::row_major> fa[2];
-            wmma::fragment<wmma::matrix_b, kWmma, kWmma, kWmma, __half, wmma::row_major> fb[2];
+            wmma::fragment<wmma::matrix_b, kWmma, kWmma, kWmma, __half, wmma::col_major> fb[2];
             for (int i = 0; i < 2; ++i) {
                 wmma::load_matrix_sync(fa[i], &ws[warp_m + i * kWmma][kk], kTcBK + kTcPad);
-                wmma::load_matrix_sync(fb[i], &ps[kk][warp_n + i * kWmma], kTcBN + kTcPad);
+                wmma::load_matrix_sync(fb[i], &ps[warp_n + i * kWmma][kk], kTcBK + kTcPad);
             }
             for (int i = 0; i < 2; ++i) {
                 for (int j = 0; j < 2; ++j) {
@@ -233,22 +298,26 @@ __global__ void __launch_bounds__(kTcThreads)
         }
         __syncthreads();
     }
+    // Epilogue, one 16 x 16 fragment at a time through the warp's own scratch, 8 values per
+    // lane. A whole-tile float buffer (17 KB) capped the SM at 3 blocks.
+    // Unrolled: acc[i][j] must have compile-time indices, or acc lives in local memory
+    // (a 128-byte stack frame, 9x the DRAM writes when measured).
+#pragma unroll
     for (int i = 0; i < 2; ++i) {
+#pragma unroll
         for (int j = 0; j < 2; ++j) {
-            wmma::store_matrix_sync(&cs[warp_m + i * kWmma][warp_n + j * kWmma], acc[i][j],
-                                    kTcBN + 4, wmma::mem_row_major);
-        }
-    }
-    __syncthreads();
-    for (int i = t; i < kTcBM * kTcBN; i += kTcThreads) {
-        const int r = i / kTcBN;
-        const int cc = i % kTcBN;
-        const int m = m0 + r;
-        const int pp = n0 + cc;
-        if (m < m_total && pp < n_total) {
-            const float v = cs[r][cc];
-            out[static_cast<std::size_t>(m) * n_total + pp] =
-                __float2half(kFused ? fmaxf(v + bias[m], 0.0F) : v);
+            wmma::store_matrix_sync(&cs[warp][0][0], acc[i][j], kWmma + 4, wmma::mem_row_major);
+            __syncwarp();
+            for (int e = lane; e < kWmma * kWmma; e += 32) {
+                const int m = m0 + warp_m + i * kWmma + e / kWmma;
+                const int pp = n0 + warp_n + j * kWmma + e % kWmma;
+                if (m < m_total && pp < n_total) {
+                    const float v = cs[warp][e / kWmma][e % kWmma];
+                    out[static_cast<std::size_t>(m) * n_total + pp] =
+                        __float2half(kFused ? fmaxf(v + bias[m], 0.0F) : v);
+                }
+            }
+            __syncwarp(); // the scratch is reused by the next fragment
         }
     }
 }
@@ -310,85 +379,105 @@ __global__ void head_kernel(int images, const T* in, float scale, const float* f
 }
 
 // ---- int8 convolution: tensor-core implicit GEMM ------------------------------------------------
-// Signed 8-bit weights and activations, int32 accumulation: the same structure as conv_fp16
-// with two differences forced by int8 fragments. Their loads need 32-byte aligned addresses,
-// and a 16-element step along K inside a 32-wide tile lands on a 16-byte boundary: so K steps
-// by 16 (one fragment deep), and the patch tile is stored transposed ([pixel][k], read as a
-// column-major fragment) so every fragment starts on an aligned row. The epilogue turns the
-// exact int32 sum back into a float (scale[c] = weight scale * input scale), adds the bias,
-// applies ReLU and requantises to 0..127 for the next layer.
-constexpr int kI8BK = 16;
-constexpr int kI8Pad = 16; // rows of 32 bytes
+// Signed 8-bit weights and activations, int32 accumulation: conv_fp16's structure, with two
+// constraints of int8 fragments shaping the shared tiles. Fragment loads need 32-byte aligned
+// addresses, and the second 16 of a 32-wide row start 16 bytes in: so a 32-deep K step is
+// staged as two 16-deep halves, each its own array. The patch tile is stored transposed,
+// ps[half][pixel][k] (read as a column-major fragment), so each thread gathers 16 consecutive
+// k of its pixel, packs them into a uint4 and writes one 16-byte store; rows are 48 bytes
+// apart so that 8 lanes' 16-byte stores fall in 8 different groups of banks (with 32-byte
+// rows, byte stores into this layout were 8-way bank conflicts: 72M conflicts per conv2).
+// The epilogue turns the exact int32 sum back into a float (scale[c] = weight scale * input
+// scale), adds the bias, applies ReLU and requantises to 0..127 for the next layer.
+constexpr int kI8BK = 32;
+constexpr int kI8Half = 16;
+constexpr int kI8Ld = 48; // bytes per staged row: 16 used, a multiple of 16, conflict-free
 
 __global__ void __launch_bounds__(kTcThreads)
     conv_int8(ConvShape s, int padded_k, const signed char* weight, const float* scale,
               const float* bias, float out_inv, const signed char* in, signed char* out) {
     namespace wmma = nvcuda::wmma;
-    __shared__ alignas(32) signed char ws[kTcBM][kI8BK + kI8Pad];
-    __shared__ alignas(32) signed char ps[kTcBN][kI8BK + kI8Pad]; // transposed: ps[pixel][k]
-    __shared__ alignas(32) int cs[kTcBM][kTcBN + 4];
+    __shared__ alignas(32) signed char ws[2][kTcBM][kI8Ld];
+    __shared__ alignas(32) signed char ps[2][kTcBN][kI8Ld]; // transposed: ps[half][pixel][k]
+    // The epilogue's per-warp scratch reuses ws (free after the K loop's last barrier):
+    // 5 KB less shared memory, so registers, not shared memory, limit the blocks per SM.
+    static_assert(sizeof(ws) >= sizeof(int) * (kTcThreads / 32) * kWmma * (kWmma + 4));
+    auto& cs = *reinterpret_cast<int(*)[kTcThreads / 32][kWmma][kWmma + 4]>(&ws[0][0][0]);
     const int m_total = s.out_channels;
     const int n_total = s.images * s.side * s.side;
-    const int k_total = s.in_channels * 9;
     const int t = static_cast<int>(threadIdx.x);
     const int warp = t / 32;
+    const int lane = t % 32;
     const int warp_m = (warp / 2) * 32;
     const int warp_n = (warp % 2) * 32;
-    const int m0 = static_cast<int>(blockIdx.y) * kTcBM;
-    const int n0 = static_cast<int>(blockIdx.x) * kTcBN;
-    const int my_col = t % kTcBN; // this thread gathers pixel column my_col, k rows t/64 + 2 j
-    const int p = n0 + my_col;
-    const bool valid = p < n_total;
-    const Pixel px = decompose(valid ? p : 0, s.side);
+    const auto [m0, n0] = tile_of(s.out_channels, kTcBM, kTcBN);
+    const bool warp_has_rows = m0 + warp_m < m_total;
+    // Thread t stages row t % 64 of half t / 64: 16 weights of channel m0 + t % 64, and the
+    // 16 patch values of pixel n0 + t % 64.
+    const int row = t % kTcBM;
+    const int half = t / kTcBM;
+    const Pixel px = pixel_of(n0 + row, n0 + row < n_total, s.side);
+    const bool uniform = s.in_channels % kI8BK == 0;
 
     wmma::fragment<wmma::accumulator, kWmma, kWmma, kWmma, int> acc[2][2];
-    for (auto& row : acc) {
-        for (auto& f : row) {
+    for (auto& r : acc) {
+        for (auto& f : r) {
             wmma::fill_fragment(f, 0);
         }
     }
     for (int k0 = 0; k0 < padded_k; k0 += kI8BK) {
-        if (t < kTcBM) { // weights: 64 rows of 16 bytes, one uint4 each
-            const int m = m0 + t;
-            *reinterpret_cast<uint4*>(&ws[t][0]) =
-                m < m_total ? *reinterpret_cast<const uint4*>(&weight[m * padded_k + k0])
-                            : make_uint4(0, 0, 0, 0);
-        }
-        for (int kk = t / kTcBN; kk < kI8BK; kk += kTcThreads / kTcBN) {
-            const int k = k0 + kk;
-            ps[my_col][kk] = (valid && k < k_total) ? patch(in, k, px, s.images, s.side)
-                                                    : static_cast<signed char>(0);
-        }
+        const int m = m0 + row;
+        *reinterpret_cast<uint4*>(&ws[half][row][0]) =
+            m < m_total
+                ? *reinterpret_cast<const uint4*>(&weight[m * padded_k + k0 + half * kI8Half])
+                : make_uint4(0, 0, 0, 0);
+        unsigned packed[4] = {};
+        gather<signed char, kI8Half, 1>(in, k0, half * kI8Half, s.in_channels, uniform, px, n_total,
+                                        s.side, [&](int j, signed char v) {
+                                            packed[j / 4] |=
+                                                static_cast<unsigned>(static_cast<unsigned char>(v))
+                                                << (8 * (j % 4));
+                                        });
+        *reinterpret_cast<uint4*>(&ps[half][row][0]) =
+            make_uint4(packed[0], packed[1], packed[2], packed[3]);
         __syncthreads();
-        wmma::fragment<wmma::matrix_a, kWmma, kWmma, kWmma, signed char, wmma::row_major> fa[2];
-        wmma::fragment<wmma::matrix_b, kWmma, kWmma, kWmma, signed char, wmma::col_major> fb[2];
-        for (int i = 0; i < 2; ++i) {
-            wmma::load_matrix_sync(fa[i], &ws[warp_m + i * kWmma][0], kI8BK + kI8Pad);
-            wmma::load_matrix_sync(fb[i], &ps[warp_n + i * kWmma][0], kI8BK + kI8Pad);
-        }
-        for (int i = 0; i < 2; ++i) {
-            for (int j = 0; j < 2; ++j) {
-                wmma::mma_sync(acc[i][j], fa[i], fb[j], acc[i][j]);
+#pragma unroll
+        for (int h = 0; h < 2 && warp_has_rows; ++h) { // padding-only warps skip, as in fp16
+            wmma::fragment<wmma::matrix_a, kWmma, kWmma, kWmma, signed char, wmma::row_major> fa[2];
+            wmma::fragment<wmma::matrix_b, kWmma, kWmma, kWmma, signed char, wmma::col_major> fb[2];
+            for (int i = 0; i < 2; ++i) {
+                wmma::load_matrix_sync(fa[i], &ws[h][warp_m + i * kWmma][0], kI8Ld);
+                wmma::load_matrix_sync(fb[i], &ps[h][warp_n + i * kWmma][0], kI8Ld);
+            }
+            for (int i = 0; i < 2; ++i) {
+                for (int j = 0; j < 2; ++j) {
+                    wmma::mma_sync(acc[i][j], fa[i], fb[j], acc[i][j]);
+                }
             }
         }
         __syncthreads();
     }
+    // Epilogue per fragment through the warp's scratch, as in conv_fp16.
+    // Unrolled: acc[i][j] must have compile-time indices, or acc lives in local memory
+    // (a 128-byte stack frame, 9x the DRAM writes when measured).
+#pragma unroll
     for (int i = 0; i < 2; ++i) {
+#pragma unroll
         for (int j = 0; j < 2; ++j) {
-            wmma::store_matrix_sync(&cs[warp_m + i * kWmma][warp_n + j * kWmma], acc[i][j],
-                                    kTcBN + 4, wmma::mem_row_major);
-        }
-    }
-    __syncthreads();
-    for (int i = t; i < kTcBM * kTcBN; i += kTcThreads) {
-        const int r = i / kTcBN;
-        const int cc = i % kTcBN;
-        const int m = m0 + r;
-        const int pp = n0 + cc;
-        if (m < m_total && pp < n_total) {
-            const float y = fmaxf(static_cast<float>(cs[r][cc]) * scale[m] + bias[m], 0.0F);
-            out[static_cast<std::size_t>(m) * n_total + pp] =
-                static_cast<signed char>(fminf(rintf(y * out_inv), 127.0F));
+            wmma::store_matrix_sync(&cs[warp][0][0], acc[i][j], kWmma + 4, wmma::mem_row_major);
+            __syncwarp();
+            for (int e = lane; e < kWmma * kWmma; e += 32) {
+                const int m = m0 + warp_m + i * kWmma + e / kWmma;
+                const int pp = n0 + warp_n + j * kWmma + e % kWmma;
+                if (m < m_total && pp < n_total) {
+                    const float y = fmaxf(
+                        static_cast<float>(cs[warp][e / kWmma][e % kWmma]) * scale[m] + bias[m],
+                        0.0F);
+                    out[static_cast<std::size_t>(m) * n_total + pp] =
+                        static_cast<signed char>(fminf(rintf(y * out_inv), 127.0F));
+                }
+            }
+            __syncwarp();
         }
     }
 }
@@ -442,7 +531,7 @@ cudaError_t launch_preprocess(unsigned images, const detail::MapDesc* descs,
 cudaError_t launch_conv_int8(const ConvShape& s, int padded_k, const signed char* weight,
                              const float* scale, const float* bias, float out_inv,
                              const signed char* in, signed char* out, cudaStream_t stream) {
-    const dim3 grid(blocks(s.images * s.side * s.side, kTcBN), blocks(s.out_channels, kTcBM));
+    const unsigned grid = blocks(s.images * s.side * s.side, kTcBN) * blocks(s.out_channels, kTcBM);
     conv_int8<<<grid, kTcThreads, 0, stream>>>(s, padded_k, weight, scale, bias, out_inv, in, out);
     return cudaGetLastError();
 }
@@ -454,7 +543,7 @@ cudaError_t launch_max(const float* x, std::size_t n, unsigned* max_bits, cudaSt
 
 cudaError_t launch_conv_fp32(const ConvShape& s, const float* weight, const float* bias,
                              const float* in, float* out, bool fused, cudaStream_t stream) {
-    const dim3 grid(blocks(s.images * s.side * s.side, kBN), blocks(s.out_channels, kBM));
+    const unsigned grid = blocks(s.images * s.side * s.side, kBN) * blocks(s.out_channels, kBM);
     if (fused) {
         conv_fp32<true><<<grid, kThreads, 0, stream>>>(s, weight, bias, in, out);
     } else {
@@ -466,7 +555,7 @@ cudaError_t launch_conv_fp32(const ConvShape& s, const float* weight, const floa
 cudaError_t launch_conv_fp16(const ConvShape& s, int padded_k, const __half* weight,
                              const float* bias, const __half* in, __half* out, bool fused,
                              cudaStream_t stream) {
-    const dim3 grid(blocks(s.images * s.side * s.side, kTcBN), blocks(s.out_channels, kTcBM));
+    const unsigned grid = blocks(s.images * s.side * s.side, kTcBN) * blocks(s.out_channels, kTcBM);
     if (fused) {
         conv_fp16<true><<<grid, kTcThreads, 0, stream>>>(s, padded_k, weight, bias, in, out);
     } else {

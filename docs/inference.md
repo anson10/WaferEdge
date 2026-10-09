@@ -193,7 +193,7 @@ for bit in fp32; batches across the 1,024-map chunk boundary equal single-map ru
 | GPU fp32 | 7.6e-6 / 7.2e-6 | 1,500 / 1,500 | **0.858** (per class = FabEye) |
 | GPU fp16 | 3.9e-3 / 5.7e-3 | 1,500 / 1,500 | **0.858** (per class = FabEye) |
 
-Over every map, fp16 against fp32: **2 of 79,608 WM-811K maps change class** (0.0025%, near-ties;
+Over every map, fp16 against fp32: **3 of 79,608 WM-811K maps change class** (0.004%, near-ties;
 none in the test split), **0 of 24,090 WaferLens maps**; largest logit change 8.1e-3. Conformal
 coverage: below.
 
@@ -202,53 +202,102 @@ coverage: below.
 End to end per batch (`bench-cnn`, 40×40 maps; bins up, preprocessing, network, logits down),
 against FabEye's model on ONNX Runtime CPU and PyTorch on this GPU (`tools/bench_cnn_yardsticks.py`,
 FabEye's checkpoint, cuDNN autotuning; **model time only, inputs already on the GPU**: the best
-case for the yardsticks). Maps/s, median of 3 (wall clock; this GPU's clock drifts, so read as
-±10%):
+case for the yardsticks). Maps/s, median of 3, all columns in one session in which the SM clock
+sat at 0.83–0.99 GHz (power and thermal cap; wall clock on this laptop, read as ±10–20%):
 
-| Batch | ONNX Runtime CPU | PyTorch fp32 | PyTorch fp16 | WaferEdge fp32 | WaferEdge fp16 |
-|---|---|---|---|---|---|
-| 1 | 452 | 282 | 275 | 743 | **915** (1.09 ms) |
-| 16 | 656 | 3,006 | 3,870 | 2,714 | 4,063 |
-| 64 | 606 | 3,724 | 6,258 | 3,106 | 4,752 |
-| 256 | 743 | 3,909 | 6,560 | 3,231 | 4,899 |
-| 1,024 | — | 4,215 | 6,790 | 3,472 | 5,047 |
+| Batch | ONNX Runtime CPU | PyTorch fp32 | PyTorch fp16 | WaferEdge fp32 | WaferEdge fp16 | WaferEdge int8 |
+|---|---|---|---|---|---|---|
+| 1 | 540 | 304 | 254 | 500 | 964 | **1,212** (0.83 ms) |
+| 16 | 657 | 2,906 | 3,789 | 3,074 | 8,913 | 9,845 |
+| 64 | 710 | 3,562 | 5,942 | 3,196 | 11,184 | 12,439 |
+| 256 | 790 | 3,886 | 6,283 | 3,408 | 10,960 | **12,960** |
+| 1,024 | — | 4,174 | 6,585 | 3,218 | 10,838 | 13,379 |
 
-- **One map: ~3.3× PyTorch** (1.1 ms vs 3.6 ms): no framework overhead per layer. That's the
-  in-line case (a wafer at a time at the tool).
-- **Large batches: ~74–76% of PyTorch fp16, ~83–90% of fp32**, even though PyTorch's numbers
-  exclude the upload and preprocessing ours include. cuDNN picks tuned kernels per layer; ours
-  is one generic implicit GEMM.
-- **~6.6× FabEye's serving path** (ONNX Runtime CPU) at batch 256, ~80× the CPU reference.
+- **Large batches: fp16 ~1.7× PyTorch fp16 and int8 ~2×**, although PyTorch's numbers exclude
+  the upload and preprocessing ours include. fp32 stays below PyTorch fp32 (77–88%): its kernel
+  is the plain register-blocked rung, bound by FMAs rather than the gather.
+- **One map: 0.55–1.0 ms** in fp16 / int8 depending on the clock (0.55 ms int8 at a higher clock
+  in the before/after run below), ~4× PyTorch's 3.3–3.9 ms: no framework overhead per layer.
+  That's the in-line case, a wafer at a time at the tool.
+- **~16× FabEye's serving path** (ONNX Runtime CPU) at batch 256 in int8.
 
-### Where the time goes (`waferedge-cnn layers`, 256 maps, fastest of 5 runs, ms)
+### The gather, rewritten: −74% (fp16) and −70% (int8) of the convolution cycles
 
-| Layer | fp32 fused | fp32 unfused | fp16 fused | fp16 unfused |
-|---|---|---|---|---|
-| preprocess | 0.41 | 0.23 | 0.18 | 0.28 |
-| conv 1 (3 → 32) | **2.25** | **4.51** | **1.85** | **3.04** |
-| conv 2 (32 → 32) | 17.00 | 19.02 | 11.62 | 13.03 |
-| maxpool 1 | 1.46 | 1.46 | 0.73 | 0.73 |
-| conv 3 (32 → 64) | 4.40 | 5.46 | 3.29 | 3.95 |
-| conv 4 (64 → 64) | 8.53 | 9.50 | 6.27 | 6.97 |
-| maxpool 2 | 0.73 | 0.73 | 0.37 | 0.37 |
-| conv 5 (64 → 128) | 4.34 | 4.80 | 3.26 | 3.62 |
-| conv 6 (128 → 128) | 8.57 | 9.02 | 6.41 | 6.84 |
-| maxpool 3 | 0.37 | 0.37 | 0.19 | 0.19 |
-| conv 7 (128 → 256) | 4.42 | 4.62 | 2.99 | 3.20 |
-| conv 8 (256 → 256) | 8.83 | 9.11 | 6.03 | 6.25 |
-| maxpool 4 | 0.19 | 0.19 | 0.09 | 0.10 |
-| head | 0.08 | 0.08 | 0.06 | 0.06 |
-| **GPU total** | **61.6** | **69.1** | **43.4** | **48.6** |
+The first version of these kernels (PR #13, #14) kept the tensor cores ~10% busy: warps
+stalled on the gather's integer arithmetic and on its loads, with only 12 (fp16) or 16 (int8)
+of 48 warps resident per SM to hide them. Five changes, each measured (Nsight Compute, sum of
+the 8 convolutions' `sm__cycles_elapsed.max`, batch 256; cycles, because the clock drifts):
 
-- **Fusion saves 11%**, most where activations are big and the GEMM is small: conv 1 (K = 27)
-  halves, since the separate bias + ReLU pass over 33.5M activations cost as much as the
-  convolution.
-- **Conv 2 is 27% of the time** with the same 37.7M multiply-adds per map as conv 4, 6, 8: its
-  32 output channels fill half of a 64-row tile (Nsight Compute: 18.7M cycles vs conv 4's 9.8M).
-- **Max pooling is 3% of the time**: fusing it into the convolution isn't worth it yet.
-- Every conv kernel keeps the tensor cores only ~10% busy (the plain GEMM rung: 38%); stalls
-  are `wait` (the gather's divide / modulo) and `long_scoreboard` (the gathered loads). The
-  cost of implicit GEMM is the gather, not the multiply.
+| Step | fp16 | int8 | What changed |
+|---|---|---|---|
+| before | 66.6M | 47.0M | occupancy 25% / 33%, shared memory the limit |
+| 1. K tap-major | 29.3M | 27.3M | one tap per K step: bounds check and offset once per step |
+| 2. 1-D grid | 27.5M | 27.3M | blocks sharing input run together (conv 8 DRAM 284 → 38 MB) |
+| 3. per-warp epilogue | 19.0M | 25.7M | 17 KB float tile → 1.25 KB per warp: occupancy 49% / 57% |
+| 4. packed, transposed staging | 18.7M | 14.0M | 16-byte stores, no bank conflicts; int8 K step 16 → 32 |
+| 5. skip padding warps | **17.6M** | **13.9M** | conv 1–2 have 32 output channels: half the tile is zeros |
+
+1. **K ordered tap-major.** The patch matrix's K was PyTorch's order, `channel * 9 + tap`: every
+   element changed tap, so every element paid two divisions, four compares and a 64-bit
+   address. With `k = tap * in_channels + channel` (the engine reorders the weights once, at
+   upload; CUTLASS and cuDNN order implicit GEMM the same way), a K step of 8, 16 or 32 lies
+   inside one tap for every layer but the first (3 channels; it keeps a per-element path). The
+   tap's bounds check becomes one bit of a 9-bit mask computed per pixel at the start, and the
+   elements are plain loads one channel plane apart. Half the cycles gone in one change.
+2. **Block order.** The grid was (pixel tiles, channel tiles): all pixel tiles of channel tile 0
+   ran, then all of tile 1 re-read the same input. Tap-major order made that visible: a
+   channel's 9 taps are now far apart in K, and conv 8's 4 MB input (2 MB L2) was read from
+   DRAM 4 times (284 MB). A 1-D grid with the channel tile as the fast index runs the blocks
+   that share pixels together: 38 MB.
+3. **Occupancy.** The tensor-core kernels staged their epilogue through a 64 × 64 float tile,
+   17 KB of shared memory, which held an SM to 3 blocks (fp16). Each warp now writes its four
+   16 × 16 fragments one at a time through its own 1.25 KB scratch (aliased onto the weight
+   tile, free after the K loop). **The first attempt was slower** (fp16 28.0M, int8 32.7M) with
+   9× the DRAM writes: the loop over `acc[i][j]` wasn't unrolled, so the compiler moved the
+   accumulators to local memory (`ptxas -v`: a 128-byte stack frame, 0 bytes "spilled"; local
+   memory is DRAM). `#pragma unroll` gives every index a compile-time value and puts them back
+   in registers.
+4. **Shared-memory stores.** int8 stored its transposed patch tile a byte at a time: 72M bank
+   conflicts in conv 2 alone (fp16: 7.7M), and its 16-deep K step (forced by the 32-byte
+   alignment of int8 fragment loads) doubled the barriers. Both tensor-core kernels now give
+   each thread 16 consecutive k of one pixel, packed in registers and written as 16-byte
+   stores; row pitches of 80 (fp16) and 48 (int8) bytes put 8 lanes' stores in 8 different
+   bank groups. int8 steps K by 32, staged as two 16-deep halves in separate aligned arrays.
+5. **Padding rows.** conv 1 and 2 have 32 output channels in a 64-row tile: two of the four
+   warps multiplied zeros. They now skip the MMA (a warp-uniform branch) and still stage and
+   synchronise. With the tensor pipe at 36% busy in fp16, this was now worth −19% on conv 2.
+
+Per layer, after (cycles, batch 256; before → after):
+
+| Layer | fp32 | fp16 | int8 |
+|---|---|---|---|
+| conv 1 (3 → 32) | 2.9M → 2.8M | 3.0M → 1.8M | 2.6M → 1.9M |
+| conv 2 (32 → 32) | 22.3M → 19.9M | 19.0M → 4.2M | 14.1M → 4.0M |
+| conv 3 (32 → 64) | 5.9M → 5.3M | 5.2M → 1.4M | 3.8M → 1.1M |
+| conv 4 (64 → 64) | 11.5M → 10.7M | 10.0M → 2.6M | 7.0M → 1.9M |
+| conv 5 (64 → 128) | 5.8M → 5.3M | 5.1M → 1.3M | 3.4M → 1.0M |
+| conv 6 (128 → 128) | 11.4M → 10.5M | 10.2M → 2.5M | 6.5M → 1.8M |
+| conv 7 (128 → 256) | 5.9M → 5.4M | 4.7M → 1.3M | 3.3M → 0.9M |
+| conv 8 (256 → 256) | 11.7M → 10.6M | 9.4M → 2.6M | 6.4M → 1.7M |
+| **total** | **77.2M → 70.6M** | **66.6M → 17.6M** | **47.0M → 14.2M** |
+
+- **End to end, 2.4× in fp16 and int8** (old and new binaries interleaved, two rounds, batch
+  256): fp16 5.2k → 12.6k maps/s, int8 6.7k → 16.2k; one map in int8 0.94 → 0.55 ms. fp32
+  +3%: its kernel is FMA-bound, the gather was a smaller share of its time.
+- **Tap-major order costs DRAM traffic** where a layer's input outgrows L2: fp32 conv 4 moves
+  522 MB instead of 134 (a channel's 9 taps are no longer read back to back). fp16 and int8,
+  which move half or a quarter of the bytes, aren't bound by it (conv 2 runs at ~30 GB/s of
+  ~190).
+- **Where it stands**: fp16 conv 2 has the tensor pipe 36% busy and stalls on the pipe and on
+  barriers; int8 issues 2.9 instructions per cycle (of 4). The next gains are in the
+  instruction count (the gather's loads, one per element) and in overlapping the next tile's
+  loads with this tile's MMAs (double buffering).
+- Accuracy unchanged: fp32 vs ONNX Runtime 7.63e-6, conformal coverage identical in all three
+  precisions; fp16 vs fp32 changes 3 of 79,608 maps instead of 2 (a different summation order
+  tips one more near-tie).
+- Fusion of bias + ReLU saved 11% with the first kernels (`waferedge-cnn layers`); with these,
+  wall-clock fused-vs-unfused pairs moved with the clock by more than the effect, so it isn't
+  re-quoted.
 
 ## Conformal prediction: the stricter check
 
@@ -294,38 +343,30 @@ Each number becomes an 8-bit integer and a scale, `x ≈ x_int · s`:
 - **Input**: the one-hot 0 / 1 is exactly 0 / 127 (`s = 1/127`): no rounding at the first layer.
 - **Kernel**: WMMA on `signed char` fragments, int32 accumulation (exact). Epilogue:
   `y = acc · (s_w[c] · s_in) + bias → ReLU → round(y / s_out)` clamped to 0…127. int8 fragment
-  loads need 32-byte aligned addresses, which a 16-element step inside a 32-wide tile breaks:
-  the kernel steps K by 16 and stores the patch tile transposed (read as a column-major
-  fragment) so every fragment starts aligned. The head dequantises the last block and runs in
-  float.
+  loads need 32-byte aligned addresses, which the second 16 of a 32-wide row break: a 32-deep
+  K step is staged as two 16-deep halves in separate arrays, and the patch tile is stored
+  transposed (read as a column-major fragment) so every fragment starts aligned. The head
+  dequantises the last block and runs in float.
 
 **Agreement over every map** (`waferedge-cnn agree --gpu int8`): **122 of 79,608 WM-811K maps
-(0.15%) and 5 of 24,090 WaferLens maps change class** against fp32 (fp16: 2 and 0); largest
+(0.15%) and 5 of 24,090 WaferLens maps change class** against fp32 (fp16: 3 and 0); largest
 logit change 0.32. Against ONNX Runtime: max |Δlogit| 0.21, same class on 998 of 1,000 test
 references and 500 of 500 WaferLens. Tests: the GPU calibration equals each layer's maximum
 computed on the CPU; int8 logits within 5% (relative) of the CPU reference on a random model
 (2.2% measured); an int8 engine without scales refuses.
 
-**Speed.** End to end (`bench-cnn`, same session): +16% over fp16 at batch 64–256 (e.g. 5,259
-vs 4,546 maps/s at 256), 1.02 vs 1.11 ms for one map. In cycles (Nsight Compute, batch 256):
-
-| | fp16 | int8 | |
-|---|---|---|---|
-| conv 2 | 16.5M cycles | 14.1M | −15% |
-| conv 4 | 9.8M cycles | 7.0M | −28% |
-| DRAM traffic, conv 4 | 67 MB | 33 MB | halved |
-| tensor pipe busy | ~10% | ~7% | |
-
-int8 doesn't approach 2× because the multiply was never the bottleneck: the kernels are bound
-by the implicit-GEMM gather (stalls on its integer arithmetic and scattered loads, tensor
-cores ~10% busy). int8 gains by moving half the bytes. A wall-clock per-layer comparison of
-fp16 and int8 run back to back came out 4× apart because the GPU throttled during the first
-run; the cycles above are the comparison to trust.
+**Speed.** With the first kernels, int8 was only 16% faster than fp16 end to end (−15 to −28%
+cycles per conv, DRAM traffic halved): both were bound by the gather, with the tensor cores
+~10% busy, so halving the bytes moved little. After the gather rewrite above, int8 is 20–25%
+faster than fp16 per conv in cycles (14.2M vs 17.6M) and 11–29% end to end at batch 64 and up.
+Still not 2×: the gather issues one load per element in both precisions, and that instruction
+count, not the multiply, sets the pace.
 
 TensorRT isn't installed on this machine (no Python package, no `trtexec`): not measured.
 
 ## Next
 
-The gather is the bottleneck of every precision: precomputed offsets for k → (channel, tap),
-32-row tiles for the 32-channel layers, vectorised patch loads. Then the CNN joins the
-pipeline (phase 4) as the third detector next to the rules.
+CUDA Graphs and streams for the engine (one map is ~0.5–1 ms, much of it launch overhead on
+WSL2), then the CNN joins the pipeline (phase 4) as the third detector next to the rules.
+Kernel-side, the next steps are double buffering (load the next K step while this one
+multiplies) and wider gather loads.

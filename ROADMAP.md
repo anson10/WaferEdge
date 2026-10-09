@@ -133,6 +133,8 @@ facts (layers, preprocessing, calibration) are in docs/context.md.
       not fused; docs/inference.md)
 - [x] **int8 quantisation**: per-channel weight scales, activation scales calibrated on held-out
       maps (never the test set), int8 tensor-core GEMM
+- [x] Convolution gather rewritten from the profile (K tap-major, block order, per-warp
+      epilogue, conflict-free staging): conv cycles −74% fp16, −70% int8; 2.4× end to end
 - [ ] Batching with streams and pinned memory (shared with phase 2a); CUDA Graphs for a fixed
       batch shape
 - [x] **Accuracy must survive**: fp32 / fp16 / int8 macro-F1 on FabEye's lot-disjoint test set,
