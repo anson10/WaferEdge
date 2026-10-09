@@ -364,9 +364,51 @@ count, not the multiply, sets the pace.
 
 TensorRT isn't installed on this machine (no Python package, no `trtexec`): not measured.
 
+## CUDA Graphs, and why not streams
+
+One map in int8 took ~0.5 ms, but its kernels take ~414K cycles, ~0.25 ms at the 1.7 GHz the
+GPU runs at in this test (Nsight Compute, batch 1). Nsight Systems (`-t cuda`; on WSL2 it sees
+the CPU side only) showed the rest: 14 kernel launches at ~18 µs each and two copies at ~32
+µs, issued one by one. A kernel lasts ~17 µs on average, about as long as launching the
+next, so the GPU kept waiting for the CPU.
+
+`CnnEngine::set_graphs(true)` records the forward pass once per chunk shape, from
+preprocessing to the logits' download, and replays it with one `cudaGraphLaunch` (as
+`SignatureEngine` does, docs/gpu.md). The upload stays **outside** the graph: its size depends
+on the maps' sizes, and preprocessing reads those from the descriptors in device memory, so
+the graph depends only on the image count, the variant and the buffer addresses. A batch of
+the same count with other map sizes replays the same graph (a test checks it, and that replays
+equal direct launches bit for bit).
+
+`bench-cnn`, two rounds (ms per batch; the ranges are the two rounds):
+
+| Batch | int8 direct | int8 graph | fp16 direct | fp16 graph |
+|---|---|---|---|---|
+| 1 | 0.50–0.54 | **0.44–0.45** | 0.68–0.71 | 0.58–0.60 |
+| 4 | 0.64–0.65 | 0.53–0.54 | 0.78–0.83 | 0.72 |
+| 16 | 1.45–1.46 | 1.25–1.26 | 1.79–1.80 | 1.57–1.60 |
+| 64 | 4.85–4.93 | 4.47–4.50 | 6.30–6.70 | 5.87–5.93 |
+| 256 | 17.8–17.9 | 17.9–18.0 | 22.9–25.7 | 23.0–27.0 |
+
+- **−12 to −19% up to 64 maps, nothing at 256**, where the kernels dominate.
+- **Less than the launches' ~0.26 ms**: they had partly overlapped with the GPU already.
+  With the graph, one int8 map is ~35 µs of upload call, ~60 µs of graph launch (one call,
+  still slow on WSL2) and ~310 µs waiting for the GPU (Nsight Systems medians): **batch 1 is now
+  GPU-bound**. Its kernels are small for the GPU: at one map, conv 8 is 4 blocks for 20 SMs,
+  each walking 72 K steps in a row. Splitting K across blocks for small batches is the next
+  lever for latency.
+- Graphs are off by default (as in `SignatureEngine`); the phase-4 pipeline turns them on.
+
+**Streams: measured, not added.** Overlapping the copies with the kernels on a second stream
+can save at most the copies' time: with the engine's timings, upload + download are 4.8% of a
+forward at one map and 0.4% at 256 (the maps are bytes, the logits 36 bytes per map). The host
+buffers are already pinned. The overlap that matters is on the CPU side, packing and launching
+the next wafer while the GPU runs the last one, and that belongs to the phase-4 pipeline: the
+engine's `run()` is synchronous by design.
+
 ## Next
 
-CUDA Graphs and streams for the engine (one map is ~0.5–1 ms, much of it launch overhead on
-WSL2), then the CNN joins the pipeline (phase 4) as the third detector next to the rules.
-Kernel-side, the next steps are double buffering (load the next K step while this one
-multiplies) and wider gather loads.
+The CNN joins the pipeline (phase 4) as the third detector next to the rules, with graphs on
+and the next wafer packed while the GPU runs. Kernel-side: split-K for small batches (batch-1
+latency is now the GPU's), double buffering (load the next K step while this one multiplies),
+and wider gather loads.

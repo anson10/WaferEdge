@@ -81,7 +81,8 @@ void BM_cnn_gpu(benchmark::State& state) {
     std::vector<float> logits(n * cnn::kClasses);
     gpu::CnnEngine engine(*model(), precision, int8_scales ? &*int8_scales : nullptr);
     engine.set_fused(state.range(2) != 0);
-    if (!engine.run(views, logits)) { // warm-up: buffers
+    engine.set_graphs(state.range(3) != 0);
+    if (!engine.run(views, logits)) { // warm-up: buffers (and the graph's recording)
         state.SkipWithError(engine.error().c_str());
         return;
     }
@@ -95,15 +96,18 @@ void BM_cnn_gpu(benchmark::State& state) {
 void batches(benchmark::internal::Benchmark* b) {
     for (const std::int64_t precision : {32, 16, 8}) {
         for (const std::int64_t n : {1, 4, 16, 64, 256, 1024, 4096}) {
-            b->Args({n, precision, 1});
+            b->Args({n, precision, 1, 0});
+            if (n <= 256) {
+                b->Args({n, precision, 1, 1}); // CUDA Graphs: where launches are a visible share
+            }
         }
         if (precision != 8) {
-            b->Args({256, precision, 0}); // unfused, for the fusion comparison
+            b->Args({256, precision, 0, 0}); // unfused, for the fusion comparison
         }
     }
 }
 
-BENCHMARK(BM_cnn_gpu)->Apply(batches)->ArgNames({"batch", "fp", "fused"})->UseRealTime();
+BENCHMARK(BM_cnn_gpu)->Apply(batches)->ArgNames({"batch", "fp", "fused", "graph"})->UseRealTime();
 
 } // namespace
 
