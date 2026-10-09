@@ -10,12 +10,14 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -70,6 +72,18 @@ struct SignatureEngine::Impl {
     std::string error;
     RunTimings timings;
     bool timing = false;
+    // CUDA Graphs: one executable graph per batch shape, replayed with one launch.
+    using GraphKey = std::array<std::uintptr_t, 10>;
+    static constexpr std::size_t kMaxGraphs = 32; // then start over: bounded memory
+    bool graphs = false;
+    std::map<GraphKey, cudaGraphExec_t> graph_cache;
+
+    void clear_graphs() {
+        for (auto& [key, exec] : graph_cache) {
+            cudaGraphExecDestroy(exec);
+        }
+        graph_cache.clear();
+    }
 
     void record(Event which) {
         if (timing) {
@@ -167,6 +181,7 @@ SignatureEngine::~SignatureEngine() {
     if (!impl_) {
         return; // moved from
     }
+    impl_->clear_graphs();
     cudaFreeHost(impl_->host_in);
     cudaFreeHost(impl_->host_out);
     cudaFree(impl_->dev_in);
@@ -193,6 +208,15 @@ FeatureKernel SignatureEngine::kernel() const noexcept {
 }
 void SignatureEngine::set_kernel(FeatureKernel kernel) noexcept {
     impl_->kernel = kernel;
+}
+void SignatureEngine::set_graphs(bool on) noexcept {
+    impl_->graphs = on;
+}
+bool SignatureEngine::graphs() const noexcept {
+    return impl_->graphs;
+}
+std::size_t SignatureEngine::cached_graphs() const noexcept {
+    return impl_->graph_cache.size();
 }
 void SignatureEngine::set_timing(bool on) noexcept {
     impl_->timing = on;
@@ -270,45 +294,100 @@ bool SignatureEngine::run(std::span<const WaferMapView> maps,
 
     // One upload, the kernels, one download, all on the engine's stream (in order); events
     // time each step when timing is on.
-    m.record(kBeforeUpload);
-    if (!m.ok(cudaMemcpyAsync(m.dev_in, m.host_in, in_bytes, cudaMemcpyHostToDevice, m.stream),
-              "upload")) {
-        return false;
-    }
-    m.record(kAfterUpload);
     const auto* dev_descs = reinterpret_cast<const MapDesc*>(m.dev_in);
     const std::uint8_t* dev_bins = m.dev_in + desc_bytes;
     const auto grid = static_cast<unsigned>(count);
-    if (want_features &&
-        !m.ok(detail::launch_features(m.kernel == FeatureKernel::warp_aggregated, grid, dev_descs,
-                                      dev_bins, m.dev_geometry,
-                                      reinterpret_cast<Features*>(m.dev_out), m.stream),
-              "feature kernel launch")) {
+    const auto enqueue = [&]() -> bool {
+        m.record(kBeforeUpload);
+        if (!m.ok(cudaMemcpyAsync(m.dev_in, m.host_in, in_bytes, cudaMemcpyHostToDevice, m.stream),
+                  "upload")) {
+            return false;
+        }
+        m.record(kAfterUpload);
+        if (want_features &&
+            !m.ok(detail::launch_features(m.kernel == FeatureKernel::warp_aggregated, grid,
+                                          dev_descs, dev_bins, m.dev_geometry,
+                                          reinterpret_cast<Features*>(m.dev_out), m.stream),
+                  "feature kernel launch")) {
+            return false;
+        }
+        m.record(kAfterFeatures);
+        if (want_lines &&
+            !m.ok(detail::launch_hough(grid, dev_descs, dev_bins,
+                                       reinterpret_cast<HoughLine*>(m.dev_out + features_bytes),
+                                       m.stream),
+                  "Hough kernel launch")) {
+            return false;
+        }
+        m.record(kAfterHough);
+        if (want_clusters &&
+            !m.ok(detail::launch_clusters(
+                      grid, dev_descs, dev_bins,
+                      need_scratch ? reinterpret_cast<int*>(m.dev_scratch) : nullptr,
+                      reinterpret_cast<ClusterSummary*>(m.dev_out + features_bytes + lines_bytes),
+                      m.stream),
+                  "cluster kernel launch")) {
+            return false;
+        }
+        m.record(kAfterClusters);
+        if (!m.ok(
+                cudaMemcpyAsync(m.host_out, m.dev_out, out_bytes, cudaMemcpyDeviceToHost, m.stream),
+                "download")) {
+            return false;
+        }
+        m.record(kAfterDownload);
+        return true;
+    };
+
+    if (m.graphs && !m.timing) {
+        // Everything the graph freezes: sizes, which kernels, and every buffer address. A
+        // buffer that grew has a new address, so its old graphs simply stop matching.
+        const Impl::GraphKey key = {
+            count,
+            in_bytes,
+            out_bytes,
+            (want_features ? 1U : 0U) | (want_lines ? 2U : 0U) | (want_clusters ? 4U : 0U) |
+                (need_scratch ? 8U : 0U) | (m.kernel == FeatureKernel::warp_aggregated ? 16U : 0U),
+            reinterpret_cast<std::uintptr_t>(m.host_in),
+            reinterpret_cast<std::uintptr_t>(m.host_out),
+            reinterpret_cast<std::uintptr_t>(m.dev_in),
+            reinterpret_cast<std::uintptr_t>(m.dev_out),
+            reinterpret_cast<std::uintptr_t>(m.dev_scratch),
+            reinterpret_cast<std::uintptr_t>(m.dev_geometry),
+        };
+        auto it = m.graph_cache.find(key);
+        if (it == m.graph_cache.end()) {
+            if (m.graph_cache.size() >= Impl::kMaxGraphs) {
+                m.clear_graphs();
+            }
+            // Record instead of run: between Begin and EndCapture the stream collects the
+            // copies and launches into a graph. The graph is then checked and prepared once
+            // (instantiate), and every later batch of this shape replays it with one call.
+            if (!m.ok(cudaStreamBeginCapture(m.stream, cudaStreamCaptureModeThreadLocal),
+                      "begin capture")) {
+                return false;
+            }
+            const bool recorded = enqueue();
+            cudaGraph_t graph = nullptr;
+            const cudaError_t ended = cudaStreamEndCapture(m.stream, &graph);
+            if (!recorded || !m.ok(ended, "end capture")) {
+                cudaGraphDestroy(graph);
+                return false;
+            }
+            cudaGraphExec_t exec = nullptr;
+            const cudaError_t made = cudaGraphInstantiate(&exec, graph, 0);
+            cudaGraphDestroy(graph); // the executable graph keeps what it needs
+            if (!m.ok(made, "instantiate graph")) {
+                return false;
+            }
+            it = m.graph_cache.emplace(key, exec).first;
+        }
+        if (!m.ok(cudaGraphLaunch(it->second, m.stream), "graph launch")) {
+            return false;
+        }
+    } else if (!enqueue()) {
         return false;
     }
-    m.record(kAfterFeatures);
-    if (want_lines && !m.ok(detail::launch_hough(
-                                grid, dev_descs, dev_bins,
-                                reinterpret_cast<HoughLine*>(m.dev_out + features_bytes), m.stream),
-                            "Hough kernel launch")) {
-        return false;
-    }
-    m.record(kAfterHough);
-    if (want_clusters &&
-        !m.ok(detail::launch_clusters(
-                  grid, dev_descs, dev_bins,
-                  need_scratch ? reinterpret_cast<int*>(m.dev_scratch) : nullptr,
-                  reinterpret_cast<ClusterSummary*>(m.dev_out + features_bytes + lines_bytes),
-                  m.stream),
-              "cluster kernel launch")) {
-        return false;
-    }
-    m.record(kAfterClusters);
-    if (!m.ok(cudaMemcpyAsync(m.host_out, m.dev_out, out_bytes, cudaMemcpyDeviceToHost, m.stream),
-              "download")) {
-        return false;
-    }
-    m.record(kAfterDownload);
     if (!m.ok(cudaStreamSynchronize(m.stream), "kernels")) {
         return false;
     }

@@ -30,8 +30,8 @@ an explainable rule classifier evaluated against FabEye's CNN
 ([docs/evaluation.md](docs/evaluation.md)); the feature counts also run on AVX2
 ([docs/avx2.md](docs/avx2.md)). Phase 2a (CUDA) is under way: the feature counts run on the
 GPU in batches, with the Hough transform and the clusters: all three from one upload ~9× the
-whole CPU at large batches, and the CPU stays faster below ~16 maps a batch
-([docs/gpu.md](docs/gpu.md), ADR-0007).
+whole CPU at large batches; replayed as CUDA Graphs, the GPU passes the whole CPU from ~4 maps
+a batch ([docs/gpu.md](docs/gpu.md), ADR-0007).
 
 ## Build
 
@@ -82,8 +82,9 @@ Real data, every copy included: WaferLens 651k vs 19.9k maps/s, WM-811K 401k vs 
 | 16 | 48.9k | 56.3k |
 | 16,384 | 86.9k | 819k |
 
-The GPU wins from ~16 maps a batch and is ~9× the whole CPU at large batches; for the
-features alone the whole CPU (5.4M maps/s) beats the GPU at every size. Real data with every
+The GPU wins from ~16 maps a batch (~4 with CUDA Graphs: 110 µs for one map, 117 µs for 16)
+and is ~9× the whole CPU at large batches; for the features alone the whole CPU (5.4M maps/s)
+beats the GPU at every size. Real data with every
 copy, GPU: WaferLens 482k, WM-811K 247k maps/s.
 
 `build/cuda/bench/bench-gpu`. Counting features is too little work per byte to win over PCIe;

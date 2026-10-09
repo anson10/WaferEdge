@@ -16,6 +16,7 @@
 #include "waferedge/hough.hpp"
 #include "waferedge/wafer_map.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -65,9 +66,17 @@ public:
              std::span<ClusterSummary> clusters = {});
 
     [[nodiscard]] const std::string& error() const noexcept;
-    // Timings of the last run() if set_timing(true) was in effect, else zeros.
+    // Timings of the last run() if set_timing(true) was in effect, else zeros. Timing runs
+    // without CUDA Graphs (events are recorded between the steps).
     [[nodiscard]] RunTimings last_timings() const noexcept;
     void set_timing(bool on) noexcept;
+
+    // CUDA Graphs: the first batch of each shape (count, sizes, requested signatures) is
+    // recorded once into a graph; later batches of that shape replay it with one
+    // cudaGraphLaunch instead of a copy, up to three launches and a copy (docs/gpu.md).
+    void set_graphs(bool on) noexcept;
+    [[nodiscard]] bool graphs() const noexcept;
+    [[nodiscard]] std::size_t cached_graphs() const noexcept;
     [[nodiscard]] FeatureKernel kernel() const noexcept;
     void set_kernel(FeatureKernel kernel) noexcept;
 

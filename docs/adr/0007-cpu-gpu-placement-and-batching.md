@@ -53,6 +53,12 @@ Option 3.
   hardware threads** (e.g. 6 of 12), so a burst of wafers doesn't pay the wake-up cost and
   spinning threads aren't preempted by the rest of the system.
 
+**Update (same day, CUDA Graphs).** Replaying each batch as one CUDA Graph halves the GPU's
+small-batch cost (all three signatures: 195 → 110 µs at batch 1, 265 → 117 µs at batch 16),
+which moves the crossover against the whole CPU from ~16 to **~4 maps**. With graphs on (the
+default for the pipeline), the CPU / GPU threshold is 4; a single wafer still runs on the CPU
+(71 µs vs 110 µs).
+
 ## Consequences
 - A single wafer's signatures cost ~70 µs on the CPU instead of ~200 µs on the GPU, plus at
   most the 2 ms deadline; both are negligible against the minutes the hold decision has.

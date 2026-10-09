@@ -94,6 +94,8 @@ reference, profiled.
       (one thread per angle instead: no atomics; == CPU on all real maps; 26–84× one core)
 - [ ] Memory: pinned host buffers, device buffer pools, **CUDA streams** overlapping copy and
       compute, no `cudaMalloc` per batch
+      (pinned buffers, reused device buffers, no per-batch allocation, CUDA Graphs per batch shape:
+      done; overlapping packing of one batch with the GPU work of the previous: still open)
 - [x] Tests (local, GPU-labelled): bit-for-bit equal features and equivalent labellings to the
       scalar reference on random batches
 - [x] Profiling with Nsight Compute / Systems: occupancy, memory throughput, a roofline-style

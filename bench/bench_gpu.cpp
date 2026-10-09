@@ -167,8 +167,9 @@ void BM_cpu_clusters(benchmark::State& state) {
     state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(n));
 }
 
-// GPU signatures by batch: clusters only, or features + Hough + clusters on one upload.
-void run_gpu_signatures(benchmark::State& state, bool all_three) {
+// GPU signatures by batch: clusters only, or features + Hough + clusters on one upload;
+// graphs: replay one recorded CUDA Graph per batch instead of the individual calls.
+void run_gpu_signatures(benchmark::State& state, bool all_three, bool graphs = false) {
     if (!backend::Cuda::available()) {
         state.SkipWithError("no CUDA device");
         return;
@@ -183,7 +184,8 @@ void run_gpu_signatures(benchmark::State& state, bool all_three) {
     std::vector<HoughLine> lines(all_three ? n : 0);
     std::vector<ClusterSummary> clusters(n);
     gpu::SignatureEngine engine;
-    if (!engine.run(views, geometries, features, lines, clusters)) { // warm-up
+    engine.set_graphs(graphs);
+    if (!engine.run(views, geometries, features, lines, clusters)) { // warm-up (records the graph)
         state.SkipWithError(engine.error().c_str());
         return;
     }
@@ -203,6 +205,14 @@ void BM_gpu_clusters(benchmark::State& state) {
 // The pipeline's case: every signature from one upload.
 void BM_gpu_all_signatures(benchmark::State& state) {
     run_gpu_signatures(state, true);
+}
+
+void BM_gpu_all_signatures_graph(benchmark::State& state) {
+    run_gpu_signatures(state, true, true);
+}
+
+void BM_gpu_clusters_graph(benchmark::State& state) {
+    run_gpu_signatures(state, false, true);
 }
 
 // The whole CPU: a thread pool, ~4 chunks per thread (at most 64 maps a chunk) so small
@@ -282,6 +292,8 @@ BENCHMARK(BM_gpu_hough)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_cpu_clusters)->RangeMultiplier(4)->Range(1, 16384)->UseRealTime();
 BENCHMARK(BM_gpu_clusters)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_gpu_all_signatures)->Apply(batches)->UseRealTime();
+BENCHMARK(BM_gpu_all_signatures_graph)->Apply(batches)->UseRealTime();
+BENCHMARK(BM_gpu_clusters_graph)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_cpu_features_threads)->Apply([](auto* b) {
     cpu_batches(b, 65536);
 }) -> ArgNames({"batch", "threads", "spin_us"}) -> UseRealTime();
