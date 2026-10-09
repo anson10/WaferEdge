@@ -252,3 +252,86 @@ TEST_CASE("features and Hough from one upload equal each computed alone") {
     CHECK(both_f == alone_f);
     CHECK(both_l == alone_l);
 }
+
+namespace {
+
+// Cluster summaries of a batch on the GPU, compared map by map with the CPU's ClusterFinder.
+void check_clusters(SignatureEngine& engine, const std::vector<WaferMap>& maps) {
+    std::vector<WaferMapView> views(maps.begin(), maps.end());
+    std::vector<ClusterSummary> gpu(maps.size());
+    REQUIRE(engine.run(views, {}, {}, {}, gpu));
+    ClusterFinder cpu;
+    for (std::size_t i = 0; i < maps.size(); ++i) {
+        cpu.run(maps[i]);
+        const auto expected = cpu.summary();
+        INFO("map " << i << " (" << maps[i].rows() << "x" << maps[i].cols() << "): gpu "
+                    << gpu[i].clusters << " clusters, largest " << gpu[i].largest.size << " at "
+                    << gpu[i].largest.first << "; cpu " << expected.clusters << ", "
+                    << expected.largest.size << " at " << expected.largest.first);
+        CHECK(gpu[i] == expected);
+    }
+}
+
+// One cluster that winds through the whole map: rows filled left to right, joined at
+// alternating ends. The longest parent chains, and every row merging into the rest late.
+WaferMap snake(int n) {
+    WaferMap map(n, n, 1);
+    for (int r = 0; r < n; r += 2) {
+        for (int c = 0; c < n; ++c) {
+            map.set(r, c, 2);
+        }
+        if (r + 1 < n) {
+            map.set(r + 1, (r / 2) % 2 == 0 ? n - 1 : 0, 2);
+        }
+    }
+    return map;
+}
+
+} // namespace
+
+TEST_CASE("GPU clusters equal the CPU's on mixed shapes and densities") {
+    require_gpu();
+    std::vector<WaferMap> maps;
+    std::uint32_t seed = 500;
+    for (const auto& [rows, cols] :
+         {std::pair{1, 1}, std::pair{1, 33}, std::pair{3, 11}, std::pair{24, 24}, std::pair{25, 27},
+          std::pair{40, 40}, std::pair{64, 64}}) {
+        for (const unsigned per_mille : {0U, 30U, 300U, 550U, 700U, 1000U}) {
+            maps.push_back(synth::random_map(rows, cols, per_mille, seed++));
+        }
+    }
+    SignatureEngine engine;
+    check_clusters(engine, maps);
+}
+
+TEST_CASE("GPU clusters survive union-find's hard cases") {
+    require_gpu();
+    std::vector<WaferMap> maps;
+    maps.push_back(snake(40)); // one winding cluster
+    maps.push_back(snake(64));
+    WaferMap all_fail(40, 40, 2); // one cluster of every die
+    maps.push_back(all_fail);
+    WaferMap checker(40, 40, 1); // only diagonal neighbours: one big 8-connected cluster
+    synth::paint(checker, [](int r, int c) { return (r + c) % 2 == 0; });
+    maps.push_back(checker);
+    WaferMap dots(40, 40, 1); // isolated dies: 400 single-die clusters, all tied for largest
+    synth::paint(dots, [](int r, int c) { return r % 2 == 0 && c % 2 == 0; });
+    maps.push_back(dots);
+    WaferMap two(30, 30, 1); // two equal blobs: the tie goes to the one whose first die comes first
+    synth::paint(two, [](int r, int c) {
+        return (r >= 5 && r < 9 && c >= 20 && c < 24) || (r >= 15 && r < 19 && c >= 3 && c < 7);
+    });
+    maps.push_back(two);
+    SignatureEngine engine;
+    check_clusters(engine, maps);
+}
+
+TEST_CASE("GPU clusters of maps too big for shared memory use the global scratch") {
+    require_gpu();
+    // 65 x 65 = 4225 positions, just over the 4096 kept in shared memory; WM-811K's largest.
+    const std::vector<WaferMap> maps = {synth::random_map(65, 65, 400, 1), snake(65),
+                                        synth::random_map(24, 24, 300, 2),
+                                        synth::random_map(212, 204, 450, 3), snake(150)};
+    SignatureEngine engine;
+    check_clusters(engine, maps);
+}

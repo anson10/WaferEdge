@@ -8,6 +8,9 @@ What runs on the GPU, how it is checked, and what it costs, measured. The short 
 - **Hough transform**: 180 votes per fail die is enough work per byte. The GPU passes one CPU
   core **from a batch of 4 maps**, and reaches **~1.2M maps/s, ~84× one core** (26–33× on
   the real datasets end to end). Equal to the CPU's line on all 103,698 real maps.
+- **Clusters** (lock-free union-find): passes one core at ~64 maps, ~1.3M maps/s (~12×).
+- **All three from one upload**: ~0.82M maps/s, **~66× one CPU core** doing the same work
+  (~80 µs a map), ahead from a batch of ~4 maps.
 
 Machine: RTX 3050 6 GB Laptop (sm_86, 20 SMs), driver / runtime 12.4, WSL2; Ryzen 5 7535HS.
 
@@ -173,6 +176,8 @@ build/cuda/bench/bench-gpu --benchmark_filter='BM_(cpu|gpu)_hough/' --benchmark_
 ncu --set full --kernel-name regex:hough --launch-skip 1 --launch-count 1 -o hough \
   build/cuda/bench/bench-gpu --benchmark_filter='BM_gpu_hough/4096/' --benchmark_min_time=1x
 ncu -i hough.ncu-rep | less                           # the profile, as text (or ncu-ui)
+build/cuda/bench/bench-gpu --benchmark_filter='BM_(cpu_clusters|gpu_clusters|gpu_all_signatures)/' \
+  --benchmark_repetitions=3 --benchmark_report_aggregates_only=true
 nsys profile -t cuda -o small build/cuda/bench/bench-gpu \
   --benchmark_filter='BM_gpu_shared_atomics/4/' && nsys stats -r cuda_api_sum small.nsys-rep
 ```
@@ -250,9 +255,63 @@ one upload, features add little (WaferLens: 608k maps/s for features + Hough).
 map on the Hough transform, so the ~200 µs a GPU call costs is paid back after 3–4 maps; it
 spends ~1 µs on the features, so it takes ~300 maps and the gain stays small.
 
+## Kernel 2: connected clusters, lock-free union-find
+
+`cuda/cluster_kernel.cu`. Clusters are the hard one to parallelise: whether two dies belong
+together can depend on a chain across the whole map (a U shape's arms meet only in its last
+row). The CPU (`src/clusters.cpp`) runs union-find in scan order and always hangs the larger
+root under the smaller, so a cluster's root is its first die. The GPU keeps that rule and
+runs every union at once (the Playne–Hawick approach), one block per map:
+
+1. every fail die is its own tree (`parent[i] = i`);
+2. each fail die unites with its fail neighbours W, NW, N, NE: find both roots, then
+   `old = atomicMin(&parent[larger], smaller)`; if `old` was still the larger root, done,
+   otherwise another thread re-linked it meanwhile, so retry from `old`. Links only ever
+   point to smaller indices, so no chain can loop, and when every thread is done each root is
+   the smallest index of its cluster: the CPU's root;
+3. every die points straight at its root (path compression);
+4. sizes counted at the roots; the largest cluster (ties to the smallest root, the CPU's
+   first) by block reduction; its integer moments and bounding box summed with shared atomics.
+
+The block returns a `ClusterSummary` (count + the largest `Cluster`, what the classifier
+uses), compared with `ClusterFinder::summary()` using `==`. Trees live in shared memory for
+maps up to 4,096 positions (64×64: all of WaferLens, 97% of WM-811K); larger maps use a slice
+of a global scratch, allocated only for batches that contain one. `find_root` reads through
+`volatile` because other threads change links during the walk.
+
+**Correctness.** 42 maps of 7 shapes × 6 densities; the hard cases: snakes (one cluster
+winding through the map: longest chains, latest merges), an all-fail map, a checkerboard
+(one cluster joined only diagonally), 400 tied single-die clusters, two equal blobs; maps over
+the shared-memory limit (65×65, 212×204, a 150×150 snake). Breaking the tie rule fails the
+test on exactly the two tie maps. `waferedge-maps`: **equal on 24,090 of 24,090 WaferLens and
+79,608 of 79,608 WM-811K maps** (including WM-811K's maps over 4,096 positions).
+
+**What bounds it** (Nsight Compute, 4,096 maps, 1.66 ms at base clock): divergence. Only 12.7
+of 32 threads per warp are active on average: ~10% of dies fail and every phase skips the
+rest, and `unite` loops a different number of times per lane (14% branch-resolving stalls,
+26% barrier between the four phases). Occupancy 50% (shared memory). Gathering the fail dies
+into a dense list first, as the Hough kernel does, is the obvious next step; at ~20% of an
+all-signatures batch it isn't the bottleneck yet.
+
+### All signatures, one upload
+
+`bench-gpu`, 40×40 maps, median of 3, end to end:
+
+| Batch | CPU clusters, 1 thread | GPU clusters | GPU features + Hough + clusters | its latency |
+|---|---|---|---|---|
+| 1 | 200k maps/s | 5.5k | 5.1k | 198 µs |
+| 4 | 176k | 23.6k | 15.8k | 254 µs |
+| 64 | 107k | 273k | 185k | 345 µs |
+| 1,024 | 106k | 1.27M | 807k | 1.27 ms |
+| 65,536 | (~104k) | 1.31–1.32M | 0.82–0.83M | 79 ms |
+
+One CPU core needs ~80 µs per map for all three (AVX2 features ~1 µs, Hough ~69 µs, clusters
+~9.5 µs): ~12.5k maps/s. The GPU passes it at a batch of ~4 and is ~66× faster at large
+batches. Real data, batches of 4,096, all copies included: WaferLens 482k maps/s, WM-811K
+247k (`waferedge-maps`, which also checks every map against the CPU).
+
 ## Next in phase 2a
 
-- Kernel 2, connected components on the GPU.
 - CPU on all cores in the crossover benchmarks.
 - Streams overlapping the upload of one batch with the kernels of the previous; CUDA Graphs
   for the per-batch call overhead; the Hough kernel's bank conflicts.

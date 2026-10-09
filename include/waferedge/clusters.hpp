@@ -43,6 +43,15 @@ struct ClusterShape {
 
 [[nodiscard]] ClusterShape shape(const Cluster& c) noexcept;
 
+// What the classifier needs from the clusters: how many, and the largest (all zero when no
+// die fails). The GPU computes this per map without returning every label; compare with ==.
+struct ClusterSummary {
+    std::uint32_t clusters = 0;
+    Cluster largest; // the first cluster of maximum size, in the order of their first dies
+
+    bool operator==(const ClusterSummary&) const = default;
+};
+
 class ClusterFinder {
 public:
     // Labels the map's fail dies. Buffers are reused across calls: after the first few maps
@@ -55,6 +64,8 @@ public:
     [[nodiscard]] std::span<const std::int32_t> labels() const noexcept { return labels_; }
     // The largest cluster (the first one on ties), or nullptr if no die fails.
     [[nodiscard]] const Cluster* largest() const noexcept;
+    // The count and the largest cluster of the last run().
+    [[nodiscard]] ClusterSummary summary() const noexcept;
 
 private:
     std::vector<std::int32_t> parent_;
