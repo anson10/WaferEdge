@@ -72,6 +72,8 @@ TEST_CASE("counts partition the dies, for random maps of any shape") {
     CHECK(sum(f.sector_dies) == f.dies);
     CHECK(sum(f.zone_fails) == f.fails);
     CHECK(sum(f.sector_fails) == f.fails);
+    CHECK(sum(f.ring_dies) == f.dies);
+    CHECK(sum(f.ring_fails) == f.fails);
     for (std::size_t z = 0; z < kZones; ++z) {
         CHECK(f.zone_fails[z] <= f.zone_dies[z]);
     }
@@ -93,6 +95,8 @@ TEST_CASE("rotating a map keeps zone counts and moves sector counts by two") {
     const auto g = features_of(synth::rotate90(map));
     CHECK(g.zone_dies == f.zone_dies);
     CHECK(g.zone_fails == f.zone_fails);
+    CHECK(g.ring_dies == f.ring_dies);
+    CHECK(g.ring_fails == f.ring_fails);
     for (std::size_t s = 0; s < kSectors; ++s) {
         // The centre die of an odd grid stays in sector 0, so compare fails only off-centre.
         if (n % 2 == 0) {

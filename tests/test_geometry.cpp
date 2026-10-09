@@ -26,6 +26,18 @@ TEST_CASE("zones and sectors of a 3x3 grid, by hand") {
     CHECK(sector_of(2, 2, 3, 3) == 7); // bottom right: 315
 }
 
+TEST_CASE("equal-width rings, by hand") {
+    // 21x21: doubled coordinates step by 2, rho = sqrt(x^2 + y^2) / 21.
+    CHECK(ring_of(10, 10, 21, 21) == 0);        // centre
+    CHECK(ring_of(10, 11, 21, 21) == 0);        // rho = 2/21 = 0.095
+    CHECK(ring_of(10, 12, 21, 21) == 1);        // 4/21 = 0.19
+    CHECK(ring_of(10, 13, 21, 21) == 2);        // 6/21 = 0.29
+    CHECK(ring_of(10, 20, 21, 21) == 9);        // 20/21 = 0.95
+    CHECK(ring_of(0, 0, 21, 21) == kRings - 1); // corner, rho > 1: last ring
+    // 10x10: the die at doubled (1, 1) has rho = sqrt(2)/10 = 0.141.
+    CHECK(ring_of(4, 5, 10, 10) == 1);
+}
+
 TEST_CASE("an even grid has no centre die; the four middle dies take one octant each") {
     // 4x4: the middle dies sit at doubled (+-1, +-1), exactly on the diagonals.
     CHECK(sector_of(1, 2, 4, 4) == 1); // (1, 1): 45 degrees
@@ -53,6 +65,7 @@ TEST_CASE("rotating a square grid by 90 degrees keeps zones and moves sectors by
             const int rc = r;
             INFO("n=" << n << " die (" << r << "," << c << ")");
             CHECK(zone_of(rr, rc, n, n) == zone_of(r, c, n, n));
+            CHECK(ring_of(rr, rc, n, n) == ring_of(r, c, n, n));
             if (!(2 * r == n - 1 && 2 * c == n - 1)) { // the centre die has no direction
                 CHECK(sector_of(rr, rc, n, n) == (sector_of(r, c, n, n) + 2) % kSectors);
             }
@@ -86,6 +99,7 @@ TEST_CASE("a Geometry table matches zone_of and sector_of") {
             const auto i = static_cast<std::size_t>(r * 30 + c);
             CHECK(g.zones()[i] == zone_of(r, c, 24, 30));
             CHECK(g.sectors()[i] == sector_of(r, c, 24, 30));
+            CHECK(g.rings()[i] == ring_of(r, c, 24, 30));
         }
     }
 }

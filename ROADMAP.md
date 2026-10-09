@@ -60,18 +60,20 @@ The domain model and classical spatial analysis, scalar first (the reference), t
 - [x] **Scratch** detection: Hough transform over fail dies (line-shaped chains)
 - [x] **Spatial randomness** test: is the fail field random or clustered (e.g. nearest-
       neighbour or join-count statistic against a binomial null)
-- [ ] Rule-based classifier: features → {none, center, donut, edge-loc, edge-ring, loc,
+- [x] Rule-based classifier: features → {none, center, donut, edge-loc, edge-ring, loc,
       scratch, random, near-full}, thresholds fitted on a training split only
-- [ ] Tests: hand-built maps per pattern; properties (rotation of a map rotates sectors,
+      (decision list as data, `explain()`, `config/rules.txt`; 'none' weighted to its natural share)
+- [x] Tests: hand-built maps per pattern; properties (rotation of a map rotates sectors,
       cluster labels partition the fail dies, empty / full / single-die maps)
 - [ ] AVX2 backend for the features; tested equal to scalar on random maps
 - [ ] Benchmark (Google Benchmark): maps/s scalar vs AVX2, by map size (24², 30², 40², 64²)
-- [ ] **Evaluation**: on WaferLens's 24,090 sorted maps against `wafer_pattern_truth`, and on
+- [x] **Evaluation**: on WaferLens's 24,090 sorted maps against `wafer_pattern_truth`, and on
       WM-811K's labelled lot-disjoint test set: per-pattern recall/precision, macro-F1, next to
       FabEye's CNN and a trivial baseline (yield threshold). Report where rules win and lose.
-- [ ] `docs/evaluation.md` with the numbers and how to regenerate them
+      (rules 0.655 / CNN 0.858 / trivial 0.118 on WM-811K test; 0.645 / 0.909 / 0.132 on WaferLens)
+- [x] `docs/evaluation.md` with the numbers and how to regenerate them
 - [x] ADR-0004: wafer-map file format and exact integer geometry
-- [ ] ADR-0005: classical, explainable signatures next to the CNN (why, and what each is for)
+- [x] ADR-0005: classical, explainable signatures next to the CNN (why, and what each is for)
 
 ## Phase 2a — CUDA backend for the classical detectors (4–6 days; the learning-heavy phase)
 

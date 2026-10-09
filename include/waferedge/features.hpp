@@ -18,6 +18,8 @@ struct Features {
     std::array<std::uint32_t, kZones> zone_fails{};
     std::array<std::uint32_t, kSectors> sector_dies{};
     std::array<std::uint32_t, kSectors> sector_fails{};
+    std::array<std::uint32_t, kRings> ring_dies{};
+    std::array<std::uint32_t, kRings> ring_fails{};
 
     bool operator==(const Features&) const = default;
 };
@@ -31,6 +33,7 @@ struct Features {
 [[nodiscard]] double fail_density(const Features& f) noexcept;
 [[nodiscard]] double zone_density(const Features& f, int zone) noexcept;
 [[nodiscard]] double sector_density(const Features& f, int sector) noexcept;
+[[nodiscard]] double ring_density(const Features& f, int ring) noexcept;
 // Fail density of a zone relative to the whole wafer: 1 for an even spread, > 1 where fails
 // concentrate. center_ratio uses zone 0, edge_ratio the last zone.
 [[nodiscard]] double zone_ratio(const Features& f, int zone) noexcept;

@@ -6,6 +6,7 @@ target_include_directories(waferedge_synth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(waferedge_synth PUBLIC waferedge PRIVATE waferedge_options)
 
 add_executable(waferedge-tests
+  test_classifier.cpp
   test_clusters.cpp
   test_features.cpp
   test_geometry.cpp
@@ -15,7 +16,9 @@ add_executable(waferedge-tests
   test_randomness.cpp)
 target_link_libraries(waferedge-tests
   PRIVATE waferedge waferedge_synth waferedge_options Catch2::Catch2WithMain)
-target_compile_definitions(waferedge-tests PRIVATE WAFEREDGE_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_compile_definitions(waferedge-tests PRIVATE
+  WAFEREDGE_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
+  WAFEREDGE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 catch_discover_tests(waferedge-tests)
 
 # GPU tests run locally only (CI has no GPU); `ctest -L gpu` selects them.

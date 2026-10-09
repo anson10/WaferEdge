@@ -16,16 +16,36 @@ Doubled doubled_centre(int row, int col, int rows, int cols) noexcept {
     return {2 * std::int64_t{col} - (cols - 1), std::int64_t{rows - 1} - 2 * std::int64_t{row}};
 }
 
-} // namespace
+// rho^2 = x^2/cols^2 + y^2/rows^2 = (x^2 rows^2 + y^2 cols^2) / (rows^2 cols^2) = num / den
+struct Rho2 {
+    std::int64_t num;
+    std::int64_t den;
+};
 
-int zone_of(int row, int col, int rows, int cols) noexcept {
+Rho2 rho2(int row, int col, int rows, int cols) noexcept {
     const auto [x, y] = doubled_centre(row, col, rows, cols);
     const std::int64_t r2 = std::int64_t{rows} * rows;
     const std::int64_t c2 = std::int64_t{cols} * cols;
-    // rho^2 = x^2/cols^2 + y^2/rows^2 = (x^2 rows^2 + y^2 cols^2) / (rows^2 cols^2)
-    const std::int64_t num = x * x * r2 + y * y * c2;
-    const std::int64_t den = r2 * c2;
+    return {x * x * r2 + y * y * c2, r2 * c2};
+}
+
+} // namespace
+
+int zone_of(int row, int col, int rows, int cols) noexcept {
+    const auto [num, den] = rho2(row, col, rows, cols);
     return static_cast<int>(std::min<std::int64_t>(kZones - 1, kZones * num / den));
+}
+
+int ring_of(int row, int col, int rows, int cols) noexcept {
+    const auto [num, den] = rho2(row, col, rows, cols);
+    // The largest k with k / R <= rho, i.e. k^2 den <= R^2 num. num <= 2 den, so a short
+    // count up is exact and cheap (it runs once per grid position per shape).
+    int k = 0;
+    while (k + 1 < kRings &&
+           std::int64_t{k + 1} * (k + 1) * den <= std::int64_t{kRings} * kRings * num) {
+        ++k;
+    }
+    return k;
 }
 
 int sector_of(int row, int col, int rows, int cols) noexcept {
@@ -56,12 +76,13 @@ int sector_of(int row, int col, int rows, int cols) noexcept {
 Geometry::Geometry(int rows, int cols)
     : rows_(rows), cols_(cols),
       zones_(static_cast<std::size_t>(rows) * static_cast<std::size_t>(cols)),
-      sectors_(zones_.size()) {
+      sectors_(zones_.size()), rings_(zones_.size()) {
     std::size_t i = 0;
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c, ++i) {
             zones_[i] = static_cast<std::uint8_t>(zone_of(r, c, rows, cols));
             sectors_[i] = static_cast<std::uint8_t>(sector_of(r, c, rows, cols));
+            rings_[i] = static_cast<std::uint8_t>(ring_of(r, c, rows, cols));
         }
     }
 }

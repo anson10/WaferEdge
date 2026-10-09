@@ -110,6 +110,12 @@ the machine, and the design sketch. Read both before starting work.
 - `build/release/tools/waferedge-maps <file.wmap>`: counts by truth/split, median signals per
   truth class, and maps/s of each scalar stage.
 - `build/release/bench/bench-features`: each scalar stage, maps/s by map size.
+- `build/release/tools/waferedge-classify fit|eval|explain ...`: the rule classifier; fit on
+  WM-811K train with `--none-weight 10.3342` (ADR-0005), eval per split, explain one wafer.
+- `python3 tools/evaluate.py <wm811k.wmap> <rules.csv> <waferlens.wmap> <rules.csv>`: rules vs
+  FabEye's CNN vs trivial, markdown tables (docs/evaluation.md has the full sequence).
+- **Evaluation discipline**: develop on WM-811K validation; score the test split once, at the
+  end of a change, and say so if a test result prompted a change (ADR-0005 has an example).
 - `pre-commit run --all-files`: whitespace, YAML/JSON, clang-format 18.
 - `clang-tidy-18 -p build/clang <files>`: use the clang build's compile commands; with GCC's
   libstdc++, Clang 18 can't see `std::expected`.

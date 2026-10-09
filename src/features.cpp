@@ -10,6 +10,7 @@ Features compute_features(WaferMapView map, const Geometry& geometry) noexcept {
     const auto bins = map.bins();
     const auto zones = geometry.zones();
     const auto sectors = geometry.sectors();
+    const auto rings = geometry.rings();
     Features f;
     for (std::size_t i = 0; i < bins.size(); ++i) {
         const std::uint8_t bin = bins[i];
@@ -19,8 +20,10 @@ Features compute_features(WaferMapView map, const Geometry& geometry) noexcept {
         const std::uint32_t fail = is_fail(bin) ? 1U : 0U;
         ++f.zone_dies[zones[i]];
         ++f.sector_dies[sectors[i]];
+        ++f.ring_dies[rings[i]];
         f.zone_fails[zones[i]] += fail;
         f.sector_fails[sectors[i]] += fail;
+        f.ring_fails[rings[i]] += fail;
     }
     for (int z = 0; z < kZones; ++z) {
         f.dies += f.zone_dies[static_cast<std::size_t>(z)];
@@ -53,6 +56,11 @@ double zone_density(const Features& f, int zone) noexcept {
 double sector_density(const Features& f, int sector) noexcept {
     const auto s = static_cast<std::size_t>(sector);
     return ratio(f.sector_fails[s], f.sector_dies[s]);
+}
+
+double ring_density(const Features& f, int ring) noexcept {
+    const auto k = static_cast<std::size_t>(ring);
+    return ratio(f.ring_fails[k], f.ring_dies[k]);
 }
 
 double zone_ratio(const Features& f, int zone) noexcept {
