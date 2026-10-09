@@ -114,14 +114,15 @@ reference, profiled.
 Run FabEye's trained CNN without ONNX Runtime or PyTorch: the core skills of an LLM inference
 engine (GEMM, tensor cores, quantisation, fusion), learned on a model we know. The model
 facts (layers, preprocessing, calibration) are in docs/context.md.
-- [ ] Weights: export from FabEye's ONNX / checkpoint to a simple binary format (script in
+- [x] Weights: export from FabEye's ONNX / checkpoint to a simple binary format (script in
       `tools/`), **fold BatchNorm into the convolutions** at export; a C++ loader with checks
       (shapes, a hash) — FabEye's repo is read, never modified
-- [ ] Preprocessing in C++ exactly as FabEye's (`cv2.resize` INTER_NEAREST to 64×64, one-hot
+- [x] Preprocessing in C++ exactly as FabEye's (`cv2.resize` INTER_NEAREST to 64×64, one-hot
       channels off / good / fail); a test against FabEye's Python output on real maps
-- [ ] CPU reference forward pass (scalar, readable): conv3×3 + ReLU, maxpool, global average
+- [x] CPU reference forward pass (scalar, readable): conv3×3 + ReLU, maxpool, global average
       pool, linear, softmax; **matches ONNX Runtime's logits** on 1,000 maps (max abs diff
-      tolerance stated)
+      tolerance stated) (max |Δ| 7.6e-6 / 8.6e-6, same class on all 1,500; macro-F1 0.858 on the
+      full test split, = FabEye's)
 - [ ] **GEMM ladder** (the CUDA learning core): naive → shared-memory tiling → register
       blocking → vectorised loads → **tensor cores** (WMMA / `mma.sync`, fp16 in, fp32 accumulate);
       each step benchmarked against cuBLAS (% of cuBLAS throughput), cuBLAS used only as the
@@ -141,7 +142,7 @@ facts (layers, preprocessing, calibration) are in docs/context.md.
 - [ ] The CNN as a third detector in the pipeline (phase 4) next to the rules; agreement / fusion
       of rule-based and CNN signals reported
 - [ ] `docs/inference.md` (the GEMM ladder table, quantisation results, coverage check)
-- [ ] ADR: own kernels instead of TensorRT/ONNX Runtime (why: learning and control; what
+- [x] ADR-0008: own kernels instead of TensorRT/ONNX Runtime (why: learning and control; what
       it costs), and the int8 scheme
 
 ## Phase 3 — SECS-II codec and HSMS transport (4–5 days)

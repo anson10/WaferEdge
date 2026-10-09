@@ -9,6 +9,7 @@ add_executable(waferedge-tests
   test_backends.cpp
   test_classifier.cpp
   test_clusters.cpp
+  test_cnn.cpp
   test_features.cpp
   test_geometry.cpp
   test_hough.cpp

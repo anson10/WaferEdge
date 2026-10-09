@@ -2,6 +2,8 @@ add_library(waferedge
   backend.cpp
   classifier.cpp
   clusters.cpp
+  cnn.cpp
+  cnn_reference.cpp
   features.cpp
   features_avx2.cpp
   geometry.cpp

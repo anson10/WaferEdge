@@ -124,6 +124,11 @@ the machine, and the design sketch. Read both before starting work.
 - `build/release/bench/bench-features`: each scalar stage, maps/s by map size.
 - `build/release/tools/waferedge-classify fit|eval|explain ...`: the rule classifier; fit on
   WM-811K train with `--none-weight 10.3342` (ADR-0005), eval per split, explain one wafer.
+- `python3 tools/export_cnn.py --out data`: FabEye's CNN weights (BatchNorm folded, checked
+  against the ONNX model) and ONNX Runtime reference logits; `--cv2-fixture <file>` rewrites
+  the OpenCV resize fixture.
+- `build/release/tools/waferedge-cnn verify|eval ...`: the CNN against ONNX Runtime's logits,
+  or scored on a split (docs/inference.md).
 - `python3 tools/evaluate.py <wm811k.wmap> <rules.csv> <waferlens.wmap> <rules.csv>`: rules vs
   FabEye's CNN vs trivial, markdown tables (docs/evaluation.md has the full sequence).
 - **Evaluation discipline**: develop on WM-811K validation; score the test split once, at the
