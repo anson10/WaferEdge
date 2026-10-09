@@ -29,6 +29,7 @@ if(WAFEREDGE_CUDA)
     gpu_info.cpp
     ${PROJECT_SOURCE_DIR}/cuda/cluster_kernel.cu
     ${PROJECT_SOURCE_DIR}/cuda/feature_kernels.cu
+    ${PROJECT_SOURCE_DIR}/cuda/gemm.cu
     ${PROJECT_SOURCE_DIR}/cuda/hough_kernel.cu
     ${PROJECT_SOURCE_DIR}/cuda/signature_engine.cu)
   target_link_libraries(waferedge PUBLIC CUDA::cudart)

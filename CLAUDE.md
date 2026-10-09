@@ -110,6 +110,9 @@ the machine, and the design sketch. Read both before starting work.
 - `build/cuda/bench/bench-gpu`: CPU (1 / 6 / 12 threads) vs GPU for each signature and all
   three, by batch size (`_timed` variants split pack / upload / kernel / download).
   `ctest --preset cuda -L gpu`: GPU tests.
+- `build/cuda/bench/bench-gemm`: the GEMM ladder vs cuBLAS / cuBLASLt (wall-clock GFLOPS).
+  **Compare GPU kernels in cycles** (`ncu --metrics sm__cycles_elapsed.max`): this laptop's
+  clock moves 0.96–1.28 GHz with power and heat, even under ncu's clock lock.
 - `ncu --set full --kernel-name regex:<kernel> --launch-skip 1 --launch-count 1 -o <out> <binary>`
   then `ncu -i <out>.ncu-rep`: one kernel's profile (write reports outside the repo).
 - GPU tools on WSL2: `nsys profile -t cuda` works (CPU side of CUDA calls only); `ncu` works
