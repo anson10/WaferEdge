@@ -151,7 +151,97 @@ Wall-clock GFLOPS for reference (`bench-gemm`, median of 3; clocks vary, see abo
 naive ~470, tiled ~610, register-blocked ~2,650, vectorised ~3,600, cuBLAS sgemm ~4,150; tensor
 cores 6,000–11,300 depending on the clock, cuBLAS fp16 ~10,000–11,700.
 
+## The CNN on the GPU
+
+`gpu::CnnEngine` (`include/waferedge/gpu_cnn.hpp`, `cuda/cnn_kernels.cu`, `cuda/cnn_engine.cu`):
+raw bins up, logits down.
+
+- **Implicit GEMM.** A 3×3 convolution is `out = W · P`: W the weights (C_out × C_in·9), P the
+  patches (C_in·9 × images·H·W). P is never built (im2col would write 9× the input): while a
+  tile of P is staged in shared memory, each element is gathered from its row k → (channel,
+  ky, kx) and column p → (image, y, x), or 0 in the padding.
+- **Layout [channel][image][y][x]**: a GEMM's output (channel × pixels) is already the next
+  layer's input. No transposes.
+- **Fusion**: bias + ReLU in the GEMM's epilogue, on values still in registers, instead of a
+  second kernel that reads and writes every activation again.
+- **Preprocessing on the GPU**: the raw bins (0.6–1.6 KB a map) go up instead of the 48 KB
+  one-hot tensor; a kernel does OpenCV's nearest rule (same double-precision arithmetic, same
+  pixels) and the one-hot encoding.
+- **fp32**: an implicit-GEMM kernel in the register-blocked style (64×64 tiles, 4×4 per
+  thread). **fp16**: the WMMA rung with the gather, fp16 weights (K padded to a multiple of 32)
+  and activations, fp32 accumulation, an epilogue through shared memory.
+- Then 2×2 max pooling, and average pooling + the linear layer (one block per image).
+
+**Correctness** (`tests/test_gpu_cnn.cpp`, a random model so no FabEye data is needed): GPU fp32
+logits equal the CPU reference within 1e-4 with the same class on maps from 1×1 to 212×204,
+including lengths where OpenCV's rounding matters; fp16 within 3%; fused equal to unfused bit
+for bit in fp32; batches across the 1,024-map chunk boundary equal single-map runs.
+
+**FabEye's model** (`waferedge-cnn verify | eval | agree ... --gpu fp32|fp16`):
+
+| | vs ONNX Runtime: max \|Δlogit\| | Same class (1,500 maps) | WM-811K test macro-F1 |
+|---|---|---|---|
+| GPU fp32 | 7.6e-6 / 7.2e-6 | 1,500 / 1,500 | **0.858** (per class = FabEye) |
+| GPU fp16 | 3.9e-3 / 5.7e-3 | 1,500 / 1,500 | **0.858** (per class = FabEye) |
+
+Over every map, fp16 against fp32: **2 of 79,608 WM-811K maps change class** (0.0025%, near-ties;
+none in the test split), **0 of 24,090 WaferLens maps**; largest logit change 8.1e-3. Conformal
+coverage is checked with the int8 step.
+
+### Speed
+
+End to end per batch (`bench-cnn`, 40×40 maps; bins up, preprocessing, network, logits down),
+against FabEye's model on ONNX Runtime CPU and PyTorch on this GPU (`tools/bench_cnn_yardsticks.py`,
+FabEye's checkpoint, cuDNN autotuning; **model time only, inputs already on the GPU**: the best
+case for the yardsticks). Maps/s, median of 3 (wall clock; this GPU's clock drifts, so read as
+±10%):
+
+| Batch | ONNX Runtime CPU | PyTorch fp32 | PyTorch fp16 | WaferEdge fp32 | WaferEdge fp16 |
+|---|---|---|---|---|---|
+| 1 | 452 | 282 | 275 | 743 | **915** (1.09 ms) |
+| 16 | 656 | 3,006 | 3,870 | 2,714 | 4,063 |
+| 64 | 606 | 3,724 | 6,258 | 3,106 | 4,752 |
+| 256 | 743 | 3,909 | 6,560 | 3,231 | 4,899 |
+| 1,024 | — | 4,215 | 6,790 | 3,472 | 5,047 |
+
+- **One map: ~3.3× PyTorch** (1.1 ms vs 3.6 ms): no framework overhead per layer. That's the
+  in-line case (a wafer at a time at the tool).
+- **Large batches: ~74–76% of PyTorch fp16, ~83–90% of fp32**, even though PyTorch's numbers
+  exclude the upload and preprocessing ours include. cuDNN picks tuned kernels per layer; ours
+  is one generic implicit GEMM.
+- **~6.6× FabEye's serving path** (ONNX Runtime CPU) at batch 256, ~80× the CPU reference.
+
+### Where the time goes (`waferedge-cnn layers`, 256 maps, fastest of 5 runs, ms)
+
+| Layer | fp32 fused | fp32 unfused | fp16 fused | fp16 unfused |
+|---|---|---|---|---|
+| preprocess | 0.41 | 0.23 | 0.18 | 0.28 |
+| conv 1 (3 → 32) | **2.25** | **4.51** | **1.85** | **3.04** |
+| conv 2 (32 → 32) | 17.00 | 19.02 | 11.62 | 13.03 |
+| maxpool 1 | 1.46 | 1.46 | 0.73 | 0.73 |
+| conv 3 (32 → 64) | 4.40 | 5.46 | 3.29 | 3.95 |
+| conv 4 (64 → 64) | 8.53 | 9.50 | 6.27 | 6.97 |
+| maxpool 2 | 0.73 | 0.73 | 0.37 | 0.37 |
+| conv 5 (64 → 128) | 4.34 | 4.80 | 3.26 | 3.62 |
+| conv 6 (128 → 128) | 8.57 | 9.02 | 6.41 | 6.84 |
+| maxpool 3 | 0.37 | 0.37 | 0.19 | 0.19 |
+| conv 7 (128 → 256) | 4.42 | 4.62 | 2.99 | 3.20 |
+| conv 8 (256 → 256) | 8.83 | 9.11 | 6.03 | 6.25 |
+| maxpool 4 | 0.19 | 0.19 | 0.09 | 0.10 |
+| head | 0.08 | 0.08 | 0.06 | 0.06 |
+| **GPU total** | **61.6** | **69.1** | **43.4** | **48.6** |
+
+- **Fusion saves 11%**, most where activations are big and the GEMM is small: conv 1 (K = 27)
+  halves, since the separate bias + ReLU pass over 33.5M activations cost as much as the
+  convolution.
+- **Conv 2 is 27% of the time** with the same 37.7M multiply-adds per map as conv 4, 6, 8: its
+  32 output channels fill half of a 64-row tile (Nsight Compute: 18.7M cycles vs conv 4's 9.8M).
+- **Max pooling is 3% of the time**: fusing it into the convolution isn't worth it yet.
+- Every conv kernel keeps the tensor cores only ~10% busy (the plain GEMM rung: 38%); stalls
+  are `wait` (the gather's divide / modulo) and `long_scoreboard` (the gathered loads). The
+  cost of implicit GEMM is the gather, not the multiply.
+
 ## Next
 
-Convolution as implicit GEMM on top of these kernels, fusion (conv + bias + ReLU + pool), then
-int8.
+Precomputed gather offsets and 32-row tiles for the 32-channel layers (the measured
+bottlenecks above), then int8 with the conformal-coverage check.

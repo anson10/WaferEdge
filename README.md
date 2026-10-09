@@ -32,8 +32,9 @@ an explainable rule classifier evaluated against FabEye's CNN
 GPU in batches, with the Hough transform and the clusters: all three from one upload ~9× the
 whole CPU at large batches; replayed as CUDA Graphs, the GPU passes the whole CPU from ~4 maps
 a batch ([docs/gpu.md](docs/gpu.md), ADR-0007). Phase 2b (the inference engine) has started: FabEye's
-CNN runs on WaferEdge's own C++ reference, equal to ONNX Runtime's predictions on every
-checked map and FabEye's macro-F1 of 0.858 ([docs/inference.md](docs/inference.md)).
+CNN runs on WaferEdge's own GEMM ladder and implicit-GEMM convolutions on the GPU (fp32 and
+fp16 tensor cores), with FabEye's macro-F1 of 0.858 in both precisions, ~5,000 maps/s, and
+1.1 ms for a single map ([docs/inference.md](docs/inference.md)).
 
 ## Build
 
@@ -91,6 +92,18 @@ copy, GPU: WaferLens 482k, WM-811K 247k maps/s.
 
 `build/cuda/bench/bench-gpu`. Counting features is too little work per byte to win over PCIe;
 the Hough transform is enough.
+
+**FabEye's CNN on WaferEdge's own GPU kernels** ([docs/inference.md](docs/inference.md)),
+end to end per batch, against FabEye's model on ONNX Runtime CPU and PyTorch on this GPU
+(model time only for those):
+
+| Batch | ONNX Runtime CPU | PyTorch fp16 | WaferEdge fp16 |
+|---|---|---|---|
+| 1 | 452 maps/s | 275 | 915 (1.1 ms) |
+| 256 | 743 | 6,560 | 4,899 |
+
+Same macro-F1 as FabEye (0.858) in fp32 and fp16; fp16 changes the class of 2 of 79,608
+WM-811K maps. `build/cuda/bench/bench-cnn`, `python3 tools/bench_cnn_yardsticks.py`.
 
 **Pattern classification** ([docs/evaluation.md](docs/evaluation.md)): macro-F1 on the same maps.
 

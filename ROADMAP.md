@@ -128,8 +128,9 @@ facts (layers, preprocessing, calibration) are in docs/context.md.
       each step benchmarked against cuBLAS (% of cuBLAS throughput), cuBLAS used only as the
       yardstick (in cycles at 2048³: 10% / 12% / 53% / 72% of cuBLAS fp32; WMMA 92% of cuBLASLt's
       best fp16 kernel; docs/inference.md)
-- [ ] Convolution as **implicit GEMM** on top of it; **fused** conv + bias + ReLU (+ maxpool)
-      kernels; layer timings before/after fusion
+- [x] Convolution as **implicit GEMM** on top of it; **fused** conv + bias + ReLU (+ maxpool)
+      kernels; layer timings before/after fusion (bias + ReLU fused: −11%; maxpool is 3% of the time,
+      not fused; docs/inference.md)
 - [ ] **int8 quantisation**: per-channel weight scales, activation scales calibrated on held-out
       maps (never the test set), int8 tensor-core GEMM
 - [ ] Batching with streams and pinned memory (shared with phase 2a); CUDA Graphs for a fixed
