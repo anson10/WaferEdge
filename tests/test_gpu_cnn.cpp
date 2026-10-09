@@ -8,6 +8,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <random>
 #include <vector>
@@ -160,4 +161,78 @@ TEST_CASE("batches: one map, more than a chunk, and growing buffers give the sam
         CHECK(std::vector<float>(all.begin() + static_cast<std::ptrdiff_t>(i * 9),
                                  all.begin() + static_cast<std::ptrdiff_t>(i * 9 + 9)) == one);
     }
+}
+
+namespace {
+
+// Each convolution's largest output (after ReLU) on the CPU, layer by layer with the
+// reference building blocks: what the GPU's calibration must report.
+gpu::ActivationMax cpu_activation_max(const cnn::Model& model, const std::vector<WaferMap>& maps) {
+    gpu::ActivationMax top{};
+    std::vector<float> a(std::size_t{32} * 64 * 64);
+    std::vector<float> b(a.size());
+    for (const auto& map : maps) {
+        cnn::preprocess(map, std::span(a).first(cnn::kInputSize));
+        int side = cnn::kSide;
+        for (std::size_t l = 0; l < cnn::kConvLayers; ++l) {
+            const auto& c = model.conv[l];
+            cnn::conv3x3_relu(a, c.in, side, side, c.weight, c.bias, c.out, b);
+            const auto n = static_cast<std::size_t>(c.out) * static_cast<std::size_t>(side * side);
+            top[l] = std::max(
+                top[l], *std::max_element(b.begin(), b.begin() + static_cast<std::ptrdiff_t>(n)));
+            if (l % 2 == 1) {
+                cnn::maxpool2(b, c.out, side, side, a);
+                side /= 2;
+            } else {
+                std::swap(a, b);
+            }
+        }
+    }
+    return top;
+}
+
+} // namespace
+
+TEST_CASE("int8 calibration measures each layer's largest activation, as the CPU does") {
+    require_gpu();
+    const auto model = random_model(5);
+    const auto maps = mixed_maps();
+    CnnEngine fp32(model, CnnPrecision::fp32);
+    gpu::ActivationMax gpu_max{};
+    REQUIRE(fp32.activation_max(std::vector<WaferMapView>(maps.begin(), maps.end()), gpu_max));
+    const auto cpu_max = cpu_activation_max(model, maps);
+    for (std::size_t l = 0; l < cnn::kConvLayers; ++l) {
+        INFO("conv " << l + 1 << ": gpu " << gpu_max[l] << ", cpu " << cpu_max[l]);
+        CHECK(std::abs(gpu_max[l] - cpu_max[l]) <= 1e-4F * (1.0F + cpu_max[l]));
+    }
+    // Only the fp32 engine calibrates.
+    CnnEngine fp16(model, CnnPrecision::fp16);
+    CHECK_FALSE(fp16.activation_max(std::vector<WaferMapView>(maps.begin(), maps.end()), gpu_max));
+}
+
+TEST_CASE("int8 logits stay close to the CPU reference; int8 without scales refuses") {
+    require_gpu();
+    const auto model = random_model(6);
+    const auto maps = mixed_maps();
+    CnnEngine fp32(model, CnnPrecision::fp32);
+    gpu::ActivationMax scales{};
+    REQUIRE(fp32.activation_max(std::vector<WaferMapView>(maps.begin(), maps.end()), scales));
+    CnnEngine int8(model, CnnPrecision::int8, &scales);
+    const auto want = cpu_logits(model, maps);
+    const auto got = gpu_logits(int8, maps);
+    double worst = 0;
+    for (std::size_t i = 0; i < want.size(); ++i) {
+        worst = std::max(
+            worst, static_cast<double>(std::abs(got[i] - want[i]) / (1.0F + std::abs(want[i]))));
+    }
+    INFO("worst relative logit error " << worst);
+    // 8 layers of 7-bit activations and per-channel 8-bit weights: ~2% of the logits measured;
+    // 5% keeps a 2x margin and still catches a broken scale.
+    CHECK(worst < 0.05);
+
+    CnnEngine unscaled(model, CnnPrecision::int8);
+    std::vector<float> logits(9);
+    const WaferMapView one = maps[0];
+    CHECK_FALSE(unscaled.run({&one, 1}, logits));
+    CHECK(unscaled.error().find("calibrated") != std::string::npos);
 }

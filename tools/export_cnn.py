@@ -10,6 +10,9 @@ Writes (FabEye is only read):
                                   ONNX exporter folded), with the ONNX model's SHA-256
   data/fabeye_logits_wm811k.bin   ONNX Runtime logits of the first 1,000 WM-811K test maps
   data/fabeye_logits_waferlens.bin  ... of 500 WaferLens maps (every 48th, all patterns)
+  data/fabeye_conformal.txt       FabEye's conformal calibration as plain numbers: per-class
+                                  set thresholds for alpha 0.1 and 0.05, the auto-accept
+                                  confidence, and FabEye's own reported results to compare
   --cv2-fixture FILE              cv2.resize INTER_NEAREST source indices for 64 outputs, for
                                   every source length 1..512 (the C++ preprocessing test)
 
@@ -128,6 +131,19 @@ def cv2_fixture(path: Path):
     print(f"{path}: cv2 {cv2.__version__} INTER_NEAREST indices, source lengths 1..512")
 
 
+def write_conformal(path: Path, cal):
+    lines = ["# FabEye's serving/calibration.json, for the model with this SHA-256:",
+             f"model_sha256 {cal['model_sha256']}"]
+    for alpha in ("0.1", "0.05"):
+        c = cal["conformal"][alpha]
+        lines.append(f"thresholds {alpha} " + " ".join(repr(float(q)) for q in c["classwise_thresholds"]))
+        lines.append(f"reported_coverage {alpha} {c['unseen_lot_coverage']!r} {c['unseen_lot_worst_class_coverage']!r}")
+    sel = cal["selective"]
+    lines.append(f"accept_confidence {sel['confidence_threshold']!r}")
+    lines.append(f"reported_accept {sel['unseen_lot_accept_rate']!r} {sel['unseen_lot_error_among_accepted']!r}")
+    path.write_text("\n".join(lines) + "\n")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, help="directory for the model and the reference logits")
@@ -149,6 +165,7 @@ def main():
     assert [(t.shape[1], t.shape[0]) for t in ours[:16:2]] == CONV_LAYERS
     args.out.mkdir(parents=True, exist_ok=True)
     write_model(args.out / "fabeye_cnn.wcnn", ours, onnx_sha)
+    write_conformal(args.out / "fabeye_conformal.txt", json.loads(CALIBRATION.read_text()))
     print(f"{args.out / 'fabeye_cnn.wcnn'}: {len(ours)} tensors, {sum(t.size for t in ours):,} parameters")
 
     rec, maps = read_wmap(args.out / "wm811k_lot.wmap")

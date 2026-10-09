@@ -131,8 +131,9 @@ the machine, and the design sketch. Read both before starting work.
   against the ONNX model) and ONNX Runtime reference logits; `--cv2-fixture <file>` rewrites
   the OpenCV resize fixture.
 - `build/release/tools/waferedge-cnn verify|eval ...`: the CNN against ONNX Runtime's logits,
-  or scored on a split (docs/inference.md); with the cuda build, `--gpu fp32|fp16`, plus
-  `agree` (fp16 vs fp32 class changes) and `layers` (per-layer ms, fused vs unfused).
+  or scored on a split (docs/inference.md); with the cuda build, `--gpu fp32|fp16|int8`
+  (int8 also `--scales data/fabeye_int8_scales.txt`, from `calibrate` on validation maps),
+  `conformal` (FabEye's coverage / auto-accept), `agree` (class changes vs fp32) and `layers`.
 - `build/cuda/bench/bench-cnn` and `python3 tools/bench_cnn_yardsticks.py`: the GPU CNN by batch,
   and FabEye's model on ONNX Runtime CPU / PyTorch GPU on this machine.
 - `python3 tools/evaluate.py <wm811k.wmap> <rules.csv> <waferlens.wmap> <rules.csv>`: rules vs

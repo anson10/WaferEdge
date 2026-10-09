@@ -9,6 +9,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <cstddef>
 #include <cstdint>
 
 namespace waferedge::gpu::cnn_detail {
@@ -18,6 +19,9 @@ cudaError_t launch_preprocess(unsigned images, const detail::MapDesc* descs,
                               const std::uint8_t* bins, float* out, cudaStream_t s);
 cudaError_t launch_preprocess(unsigned images, const detail::MapDesc* descs,
                               const std::uint8_t* bins, __half* out, cudaStream_t s);
+// int8: one-hot as 0 / 127 (scale 1 / 127).
+cudaError_t launch_preprocess(unsigned images, const detail::MapDesc* descs,
+                              const std::uint8_t* bins, signed char* out, cudaStream_t s);
 
 struct ConvShape {
     int in_channels;
@@ -37,6 +41,17 @@ cudaError_t launch_conv_fp16(const ConvShape& s, int padded_k, const __half* wei
                              const float* bias, const __half* in, __half* out, bool fused,
                              cudaStream_t stream);
 
+// int8 tensor-core implicit GEMM: weight int8 out x padded_k; acc (int32) -> acc * scale[c]
+// + bias[c] (scale[c] = weight scale of channel c * input activation scale) -> ReLU ->
+// round(y * out_inv) clamped to 0..127 (out_inv = 1 / output activation scale).
+cudaError_t launch_conv_int8(const ConvShape& s, int padded_k, const signed char* weight,
+                             const float* scale, const float* bias, float out_inv,
+                             const signed char* in, signed char* out, cudaStream_t stream);
+
+// Calibration: running maximum of x[0..n) (non-negative after ReLU) into *max_bits, a float's
+// bit pattern (for non-negative floats the bit patterns order like the values).
+cudaError_t launch_max(const float* x, std::size_t n, unsigned* max_bits, cudaStream_t stream);
+
 // The unfused path's second kernel: x = ReLU(x + bias[channel]).
 cudaError_t launch_bias_relu(const ConvShape& s, const float* bias, float* x, cudaStream_t stream);
 cudaError_t launch_bias_relu(const ConvShape& s, const float* bias, __half* x, cudaStream_t stream);
@@ -46,12 +61,16 @@ cudaError_t launch_maxpool(int channels, int images, int side, const float* in, 
                            cudaStream_t stream);
 cudaError_t launch_maxpool(int channels, int images, int side, const __half* in, __half* out,
                            cudaStream_t stream);
+cudaError_t launch_maxpool(int channels, int images, int side, const signed char* in,
+                           signed char* out, cudaStream_t stream);
 
 // Global average pool over 4 x 4, then the linear layer: in 256 x images x 4 x 4 -> logits
-// images x 9.
+// images x 9. `scale` dequantises int8 input (1 for float and fp16).
 cudaError_t launch_head(int images, const float* in, const float* fc_weight, const float* fc_bias,
                         float* logits, cudaStream_t stream);
 cudaError_t launch_head(int images, const __half* in, const float* fc_weight, const float* fc_bias,
                         float* logits, cudaStream_t stream);
+cudaError_t launch_head(int images, const signed char* in, float scale, const float* fc_weight,
+                        const float* fc_bias, float* logits, cudaStream_t stream);
 
 } // namespace waferedge::gpu::cnn_detail

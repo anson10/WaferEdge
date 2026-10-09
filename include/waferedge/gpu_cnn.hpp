@@ -21,7 +21,14 @@ namespace waferedge::gpu {
 enum class CnnPrecision : std::uint8_t {
     fp32, // fp32 everywhere: equal to the CPU reference within float rounding
     fp16, // tensor cores (WMMA): fp16 weights and activations, fp32 accumulation
+    int8, // tensor cores (WMMA): int8 weights (per-channel scales) and activations (per-layer
+          // scales from calibration), int32 accumulation; the head runs in float
 };
+
+// The largest output of each convolution (after ReLU) on calibration maps: what int8 needs
+// to choose each layer's activation scale (max / 127). From CnnEngine::activation_max on the
+// fp32 engine, on validation maps, never test.
+using ActivationMax = std::array<float, cnn::kConvLayers>;
 
 // Milliseconds per stage of the last run(), when set_timing(true) (CUDA events between the
 // kernels; off by default, they cost ~15 us each on WSL2).
@@ -36,7 +43,9 @@ struct CnnTimings {
 
 class CnnEngine {
 public:
-    CnnEngine(const cnn::Model& model, CnnPrecision precision);
+    // int8 needs the calibration maxima; the other precisions ignore them.
+    CnnEngine(const cnn::Model& model, CnnPrecision precision,
+              const ActivationMax* activation_max = nullptr);
     ~CnnEngine();
     CnnEngine(const CnnEngine&) = delete;
     CnnEngine& operator=(const CnnEngine&) = delete;
@@ -47,10 +56,13 @@ public:
     // and are reused. Returns false on a CUDA error; error() says which.
     bool run(std::span<const WaferMapView> maps, std::span<float> logits);
 
+    // fp32 engine only: runs the maps and records each convolution's largest output.
+    bool activation_max(std::span<const WaferMapView> maps, ActivationMax& out);
+
     [[nodiscard]] const std::string& error() const noexcept;
     [[nodiscard]] CnnPrecision precision() const noexcept;
     // Bias + ReLU in the GEMM's epilogue (default) or as a separate kernel per conv: the
-    // before / after of fusion.
+    // before / after of fusion (fp32 and fp16; int8 is always fused, its epilogue requantises).
     void set_fused(bool on) noexcept;
     void set_timing(bool on) noexcept;
     [[nodiscard]] CnnTimings last_timings() const noexcept;

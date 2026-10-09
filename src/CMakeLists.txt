@@ -3,6 +3,7 @@ add_library(waferedge
   classifier.cpp
   clusters.cpp
   cnn.cpp
+  cnn_conformal.cpp
   cnn_reference.cpp
   features.cpp
   features_avx2.cpp
