@@ -20,6 +20,7 @@ add_library(waferedge
   randomness.cpp
   pipeline/analyzer.cpp
   pipeline/decision.cpp
+  pipeline/detector.cpp
   pipeline/edge_core.cpp
   pipeline/edge_host.cpp
   hsms/protocol.cpp
@@ -43,6 +44,7 @@ target_compile_definitions(waferedge
 if(WAFEREDGE_CUDA)
   target_sources(waferedge PRIVATE
     gpu_info.cpp
+    pipeline/detector_gpu.cpp
     ${PROJECT_SOURCE_DIR}/cuda/cluster_kernel.cu
     ${PROJECT_SOURCE_DIR}/cuda/cnn_engine.cu
     ${PROJECT_SOURCE_DIR}/cuda/cnn_kernels.cu

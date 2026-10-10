@@ -70,7 +70,8 @@ struct Verdict {
     LotId lot;
     std::uint64_t wafer = 0;
     Pattern pattern = Pattern::none;
-    int rule = -1; // the classifier rule that fired
+    int rule = -1;                     // the classifier rule that fired, if a rule detector
+    Pattern second = Pattern::unknown; // a paired detector's pattern (agreement), else unknown
     TimePoint received;
     TimePoint analysed; // when the classifier finished
 };

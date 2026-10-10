@@ -156,7 +156,9 @@ the machine, and the design sketch. Read both before starting work.
   (active HSMS, GEM host, analytics threads, hold rule; docs/pipeline.md);
   `build/dev/tests/waferedge-tests "[edge]"` and `waferedge-alloc-tests "[edge]"`.
 - `build/release/bench/bench-latency [--maps FILE] [--rates ...] [--workers N]`: sort result
-  → decision and → HOLD at the tool, by load, from the emulator's schedule (ADR-0015).
+  → decision and → HOLD at the tool, by load, from the emulator's schedule (ADR-0015);
+  `--detector rules|cnn-cpu|rules-gpu|cnn-fp32|cnn-fp16|cnn-int8|A+B --batch B
+  --deadline-us D` for the experiments (ADR-0016), accuracy against truth in the same run.
 - `build/release/bench/bench-ring`: the SPSC ring vs a mutex queue (throughput, median of 3;
   ping-pong round trip); `build/dev/tests/waferedge-tests "[ring]"`, and under the `tsan` preset.
 - `cmake --preset fuzz && cmake --build --preset fuzz`, then

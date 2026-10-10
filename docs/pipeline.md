@@ -7,7 +7,9 @@ time from sort to hold is measured. This page grows with the phase; so far it co
 ADR-0012), the **SPSC ring** the edge host's threads hand wafers over with
 (`include/waferedge/pipeline/spsc_ring.hpp`; ADR-0013), the **edge host** itself
 (`include/waferedge/pipeline/`, `src/pipeline/`, `tools/edge_host.cpp`; ADR-0014), and the
-**latency** from sort result to hold (`bench/bench_latency.cpp`; ADR-0015).
+**latency** from sort result to hold (`bench/bench_latency.cpp`; ADR-0015), and the
+**experiments** with detectors and batching (`include/waferedge/pipeline/detector.hpp`;
+ADR-0016).
 
 ```
  tool-emulator (passive HSMS, GEM equipment)          waferedge-edge (active HSMS, GEM host)
@@ -360,6 +362,91 @@ commands:
   is the ring backing up near the worker's capacity. At 100/s the first 2,000 wafers in
   `tested_at` order contain no excursion that trips 3 of 5, so no hold.
 
+## Experiments: which detector, which batch
+
+The workers run a pluggable `pipeline::Detector` on batches (ADR-0016). A batch starts when
+`--batch` wafers wait, or when the oldest has waited `--deadline-us` since it arrived.
+Batch 1 is "each wafer at once".
+
+| `--detector` | What runs | Calls |
+|---|---|---|
+| `rules` (default) | signals on the CPU (AVX2 features), the fitted rule table | per map |
+| `cnn-cpu` | FabEye's CNN, the CPU reference forward pass | per map |
+| `rules-gpu` | the GPU signature engine's features, Hough line and clusters, then the same rules | one per batch |
+| `cnn-fp32`, `cnn-fp16`, `cnn-int8` | the CNN on WaferEdge's GPU engine | one per batch |
+| `A+B` | A decides; B's pattern is recorded, and the agreement reported | both |
+
+`bench-latency` scores every run against truth as it goes: the share of verdicts that
+match their map's label, and the held lots against the excursion lots (precision: held lots
+that were excursions; recall: excursion lots that were held).
+
+Batching the CPU rules only adds the wait for a batch to fill. Synthetic maps, 2 ms
+deadline, one worker, **4-thread cloud container**:
+
+| Batch | Wafers/s | Decision p50 | p99 | p99.9 | Dropped |
+|---|---|---|---|---|---|
+| 1 | 1,000 | 340 µs | 1.3 ms | 3.2 ms | 0 |
+| 1 | 10,000 | 104 µs | 3.5 ms | 7.4 ms | 0 |
+| 16 | 1,000 | 1.5 ms | 3.5 ms | 7.1 ms | 0 |
+| 16 | 10,000 | 1.3 ms | 2.2 ms | 2.6 ms | 0 |
+| 64 | 1,000 | 1.4 ms | 2.8 ms | 4.6 ms | 0 |
+| 64 | 10,000 | 1.7 ms | 26.9 ms | 37.5 ms | 158 |
+
+At 1,000 wafers/s a batch of 16 never fills, so every wafer waits up to the 2 ms deadline.
+At 10,000/s a batch of 16 fills in 1.6 ms; a batch of 64 never fills and ends at the
+deadline. All rows held the same 12 / 120 lots with 100% precision and recall: batching
+changes when a decision is made, not what it is.
+
+### Every detector on the laptop
+
+WaferLens demo maps (real, 24² to 40²), hold after 3 of 5, one worker; laptop (Ryzen 5
+7535HS, RTX 3050 Laptop, WSL2), `cuda` build. The rules' row is from the latency runs above
+(batch 1); `rules-gpu` gives the same verdict as `rules` on every map (GPU test), so its
+accuracy columns stand for both.
+
+| Detector | Batch / deadline | 100/s p50 · p99 | 1,000/s p50 · p99 | 10,000/s p50 · p99 | Dropped at 10,000/s |
+|---|---|---|---|---|---|
+| `rules` (CPU) | 1 / – | 0.53 · 1.1 ms | 0.38 · 0.83 ms | 0.31 · 15.2 ms | 0 |
+| `rules-gpu` | 64 / 2 ms | 3.5 · 4.4 ms | 2.2 · 4.8 ms | 2.3 · 5.1 ms | 0 |
+| `cnn-fp16+rules` | 64 / 2 ms | 6.4 · 7.1 ms | 2.7 · 11.5 ms | 27.5 · 69.7 ms | 4,935 of 24,090 |
+| `cnn-int8+rules` | 64 / 2 ms | 5.5 · 6.2 ms | 2.7 · 7.6 ms | 26.0 · 49.0 ms | 4,014 of 24,078 |
+| `cnn-fp16` | 8 / 0.5 ms | | 1.4 · 2.4 ms | | |
+| `cnn-fp16` | 256 / 10 ms | | 6.5 · 11.7 ms | | |
+| `cnn-cpu` | 1 / – | 19.5 · 23.8 **s** | 13.4 · 23.6 **s** | | (1,528 of 2,000 at 100/s) |
+
+Accuracy at 1,000 wafers/s in the same runs (2,830–2,870 wafers, 16 excursion lots):
+
+| Detector | Wafers right | Held lots | Precision | Recall | Agreement with rules |
+|---|---|---|---|---|---|
+| rules (CPU or GPU) | 97.4% | 11 | 100% | 68.8% | – |
+| CNN fp16 | 98.3% | 13 | 92.3% | 75.0% | 98.0% |
+| CNN int8 | 98.3% | 13 | 92.3% | 75.0% | 98.0% |
+
+What they say:
+- **The CNN on the CPU is out of the question at the edge:** the plain reference forward pass
+  does ~20 maps/s. Even at 100 wafers/s three quarters were dropped, and the rest waited
+  13–24 s in a full ring. It exists to be correct, not fast.
+- **On the GPU, latency is the batch deadline plus one call.** `rules-gpu` at 100/s spends
+  3.2 ms from receipt to verdict: the 2 ms deadline (a batch of 64 never fills) plus ~1 ms for
+  the upload, kernels and download on WSL2. The same rules on the CPU take 0.3–0.5 ms
+  in total. At these loads the GPU buys the rules nothing; it would only pay at rates where
+  one CPU worker saturates (~14,000 real maps/s).
+- **For the CNN, small batches and short deadlines win at 1,000/s:** batch 8 / 0.5 ms gives
+  1.4 ms median and 2.4 ms p99; batch 256 / 10 ms gives 6.5 and 11.7 ms. Bigger batches only
+  pay once the load fills them before the deadline.
+- **The CNN pairs saturate near 8,000 wafers/s** (4,000–4,900 dropped at 10,000/s). A pair
+  runs the CPU rules after every CNN batch on the same worker, so part of that cost is the
+  rules; `cnn-fp16` alone at high load is not measured yet.
+- **int8 and fp16 make the same decisions here** (same accuracy and holds at 1,000/s) at a
+  slightly lower latency, consistent with docs/inference.md.
+- **The CNN is a little more accurate and finds more excursions, at a price:** 98.3% of
+  wafers right against 97.4%, and 12 of 16 excursion lots held against 11, but one of its
+  13 holds was a lot without an excursion (precision 92% against 100%). The two agree on 98%
+  of wafers.
+- **Recall stops at 59–75% for every detector.** Some excursion lots never show 3 flagged
+  wafers among 5: that is the hold rule's k and W, not the detector, and is where the
+  closed-loop result picks up.
+
 ## Reproduce
 
 ```sh
@@ -374,6 +461,13 @@ build/dev/tests/waferedge-alloc-tests "[edge]"       # the edge hot path allocat
 build/dev/tests/waferedge-tests "[histogram]"        # the latency histogram
 build/release/bench/bench-latency                    # sort -> decision / HOLD by load
 build/release/bench/bench-latency --workers 2 --rates 40000,80000 --seconds 2
+build/dev/tests/waferedge-tests "[detector]"         # detectors, factory, batching
+build/release/bench/bench-latency --batch 16 --deadline-us 2000   # batching the CPU rules
+# On the laptop, cuda build and FabEye's model (tools/export_cnn.py --out data):
+ctest --preset cuda -L gpu -R "rules-gpu|cnn-fp32"  # rules-gpu == rules, cnn-fp32 vs cnn-cpu
+build/cuda/bench/bench-latency --maps data/waferlens_demo.wmap --rates 100,1000 --detector cnn-cpu
+build/cuda/bench/bench-latency --maps data/waferlens_demo.wmap --rates 100,1000,10000 \
+    --detector cnn-fp16+rules --batch 64 --deadline-us 2000
 build/release/tools/tool-emulator tests/data/waferlens_sample.wmap --port 5000 --rate 5 &
 python3 -m venv /tmp/secsgem-venv && /tmp/secsgem-venv/bin/pip install secsgem==0.3.0
 /tmp/secsgem-venv/bin/python tools/secsgem_host.py --port 5000 --hold LOT-000281

@@ -180,3 +180,62 @@ TEST_CASE("the uncached variant is just as correct", "[ring]") {
         });
     CHECK(bad == 0);
 }
+
+TEST_CASE("peek and pop(n): a consumer takes several slots at once", "[ring]") {
+    SpscRing<int, 8> ring;
+    CHECK(ring.peek(0) == nullptr);
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(ring.try_push(i));
+    }
+    for (std::size_t i = 0; i < 5; ++i) {
+        REQUIRE(ring.peek(i) != nullptr);
+        CHECK(*ring.peek(i) == static_cast<int>(i));
+    }
+    CHECK(ring.peek(5) == nullptr);
+    CHECK(ring.peek(0) == ring.front());
+    ring.pop(3);
+    CHECK(*ring.front() == 3);
+    CHECK(ring.size_approx() == 2);
+    // Across the wrap: 6 more pushed into slots 5, 6, 7, 0, 1, 2.
+    for (int i = 5; i < 11; ++i) {
+        REQUIRE(ring.try_push(i));
+    }
+    for (std::size_t i = 0; i < 8; ++i) {
+        CHECK(*ring.peek(i) == static_cast<int>(i) + 3);
+    }
+    ring.pop(8);
+    CHECK(ring.empty_approx());
+}
+
+TEST_CASE("two threads, batches: every message once, in order", "[ring]") {
+    auto ring = std::make_unique<SpscRing<Small, 64>>();
+    constexpr std::uint64_t n = 500'000;
+    std::uint64_t bad = 0;
+    std::thread consumer([&] {
+        std::uint64_t expected = 0;
+        while (expected < n) {
+            // Take whatever is there, up to 16, in place.
+            std::size_t k = 0;
+            while (k < 16 && ring->peek(k) != nullptr) {
+                const Small& s = *ring->peek(k);
+                bad += (s.seq != expected + k || s.check != mix(expected + k)) ? 1U : 0U;
+                ++k;
+            }
+            if (k == 0) {
+                std::this_thread::yield();
+                continue;
+            }
+            ring->pop(k);
+            expected += k;
+        }
+    });
+    for (std::uint64_t i = 0; i < n;) {
+        if (ring->try_push(Small{i, mix(i)})) {
+            ++i;
+        } else {
+            std::this_thread::yield();
+        }
+    }
+    consumer.join();
+    CHECK(bad == 0);
+}

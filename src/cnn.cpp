@@ -1,5 +1,7 @@
 #include "waferedge/cnn.hpp"
 
+#include "waferedge/gpu_cnn.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <cassert>
@@ -7,6 +9,7 @@
 #include <cstring>
 #include <format>
 #include <fstream>
+#include <sstream>
 #include <string_view>
 
 namespace waferedge::cnn {
@@ -165,3 +168,26 @@ Pattern predicted(std::span<const float> logits) noexcept {
 }
 
 } // namespace waferedge::cnn
+
+namespace waferedge::gpu {
+
+std::optional<ActivationMax> read_activation_max(const std::string& path) {
+    std::ifstream in(path);
+    ActivationMax m{};
+    std::size_t found = 0;
+    for (std::string line; std::getline(in, line);) {
+        if (line.empty() || line.starts_with('#')) {
+            continue;
+        }
+        std::istringstream f(line);
+        std::size_t layer = 0;
+        float value = 0;
+        if (f >> layer >> value && layer >= 1 && layer <= m.size()) {
+            m[layer - 1] = value;
+            ++found;
+        }
+    }
+    return found == m.size() ? std::optional(m) : std::nullopt;
+}
+
+} // namespace waferedge::gpu

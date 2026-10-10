@@ -10,6 +10,7 @@ add_executable(waferedge-tests
   test_classifier.cpp
   test_clusters.cpp
   test_cnn.cpp
+  test_detector.cpp
   test_edge.cpp
   test_edge_host.cpp
   test_features.cpp
@@ -54,11 +55,12 @@ catch_discover_tests(waferedge-alloc-tests)
 
 # GPU tests run locally only (CI has no GPU); `ctest -L gpu` selects them.
 if(WAFEREDGE_CUDA)
-  add_executable(waferedge-gpu-tests test_gpu.cpp test_gpu_cnn.cpp test_gpu_gemm.cpp test_gpu_signatures.cpp
+  add_executable(waferedge-gpu-tests test_gpu.cpp test_gpu_cnn.cpp test_gpu_detector.cpp test_gpu_gemm.cpp test_gpu_signatures.cpp
                                     gpu/iota_kernel.cu)
   target_link_libraries(waferedge-gpu-tests
     PRIVATE waferedge waferedge_synth waferedge_options CUDA::cudart Catch2::Catch2WithMain)
   target_compile_definitions(waferedge-gpu-tests PRIVATE
-    WAFEREDGE_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    WAFEREDGE_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
+    WAFEREDGE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
   catch_discover_tests(waferedge-gpu-tests PROPERTIES LABELS gpu)
 endif()

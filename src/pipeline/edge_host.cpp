@@ -65,7 +65,10 @@ EdgeHost::EdgeHost(const asio::any_io_executor& executor, const RuleClassifier& 
               AnalyzerConfig a = config_.analyzer;
               const auto at = static_cast<std::size_t>(i);
               a.cpu = at < config_.worker_cpus.size() ? config_.worker_cpus[at] : -1;
-              workers.push_back(std::make_unique<Analyzer>(classifier, a, [this] { signal(); }));
+              auto detector = config_.detector ? config_.detector()
+                                               : std::make_unique<RulesDetector>(classifier);
+              workers.push_back(
+                  std::make_unique<Analyzer>(std::move(detector), a, [this] { signal(); }));
           }
           return workers;
       }()),

@@ -13,6 +13,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -29,6 +30,10 @@ enum class CnnPrecision : std::uint8_t {
 // to choose each layer's activation scale (max / 127). From CnnEngine::activation_max on the
 // fp32 engine, on validation maps, never test.
 using ActivationMax = std::array<float, cnn::kConvLayers>;
+
+// Reads the file `waferedge-cnn calibrate` writes: one "layer max" line per convolution
+// (1-based), '#' comments. nullopt unless every layer is given. Plain C++ (any build).
+[[nodiscard]] std::optional<ActivationMax> read_activation_max(const std::string& path);
 
 // Milliseconds per stage of the last run(), when set_timing(true) (CUDA events between the
 // kernels; off by default, they cost ~15 us each on WSL2).

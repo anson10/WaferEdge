@@ -89,25 +89,6 @@ struct GpuChoice {
 };
 using Gpu = std::optional<GpuChoice>;
 
-std::optional<gpu::ActivationMax> read_scales(const std::string& path) {
-    std::ifstream in(path);
-    gpu::ActivationMax m{};
-    std::size_t found = 0;
-    for (std::string line; std::getline(in, line);) {
-        if (line.empty() || line.starts_with('#')) {
-            continue;
-        }
-        std::istringstream f(line);
-        std::size_t layer = 0;
-        float value = 0;
-        if (f >> layer >> value && layer >= 1 && layer <= m.size()) {
-            m[layer - 1] = value;
-            ++found;
-        }
-    }
-    return found == m.size() ? std::optional(m) : std::nullopt;
-}
-
 // Logits of the given maps: the GPU engine with --gpu, otherwise all CPU cores.
 std::vector<float> forward_all(const cnn::Model& model, const std::vector<WaferMapView>& maps,
                                double& seconds, const Gpu& gpu) {
@@ -420,7 +401,7 @@ int run(int argc, char** argv) {
         args.resize(args.size() - 2);
     }
     if (gpu && gpu->precision == gpu::CnnPrecision::int8) {
-        const auto scales = scales_path ? read_scales(*scales_path) : std::nullopt;
+        const auto scales = scales_path ? gpu::read_activation_max(*scales_path) : std::nullopt;
         if (!scales) {
             return fail("--gpu int8 needs --scales <file> from `waferedge-cnn calibrate`");
         }
