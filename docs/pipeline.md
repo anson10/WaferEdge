@@ -4,12 +4,13 @@ Phase 4 puts the pieces together into a closed loop: a tool emulator sorts wafer
 them over HSMS / SECS-II, the edge host finds spatial signatures and holds the lot, and the
 time from sort to hold is measured. This page grows with the phase; so far it covers the
 **tool emulator** (`include/waferedge/emulator/`, `src/emulator/`, `tools/tool_emulator.cpp`;
-ADR-0012) and the **SPSC ring** the edge host's threads will hand wafers over with
-(`include/waferedge/pipeline/spsc_ring.hpp`; ADR-0013).
+ADR-0012), the **SPSC ring** the edge host's threads hand wafers over with
+(`include/waferedge/pipeline/spsc_ring.hpp`; ADR-0013), and the **edge host** itself
+(`include/waferedge/pipeline/`, `src/pipeline/`, `tools/edge_host.cpp`; ADR-0014).
 
 ```
- tool-emulator (passive HSMS, GEM equipment)          edge host (phase 4, next)
-   Replay: constant-rate schedule ──S6F11 wafer report──►  decode → detect → decide
+ tool-emulator (passive HSMS, GEM equipment)          waferedge-edge (active HSMS, GEM host)
+   Replay: constant-rate schedule ──S6F11 wafer report──►  decode → classify → decide
    holds: skip the lot's wafers ◄──S2F41 HOLD / RELEASE──  hold the lot
 ```
 
@@ -130,9 +131,124 @@ median of 3 runs with the range; **4-thread cloud container, not the laptop**:
   when it sleeps): ~27 µs per round trip against ~0.7 µs. For the closed loop that is the
   difference between a hand-off being free and costing more than the whole HSMS transaction.
 - Caching the counters helps, by less than its reputation and noisily here (the uncached
-  ring's runs range from 10.7 to 25.1 M/s): these virtual CPUs may share caches. The laptop's
-  separate per-core L2 caches should show the effect more clearly.
+  ring's runs range from 10.7 to 25.1 M/s).
 - At 1,600 bytes every queue is bound by copying the map; the in-place API removes that copy.
+
+On the laptop (Ryzen 5 7535HS, 6 cores / 12 threads, WSL2, release build), pinned to
+separate cores (`--cpus 0 2`) and to the two hyperthreads of one core (`--cpus 0 1`):
+
+| Payload | CPUs | SPSC ring | ring, no cached counters | mutex + condvar |
+|---|---|---|---|---|
+| 16 B | 0, 2 | 23.7 M/s (16.3–25.4) | 17.2 M/s (16.1–18.0) | 6.8 M/s (6.8–6.8) |
+| 16 B | 0, 1 | 22.7 M/s (22.0–24.6) | 17.2 M/s (16.3–17.3) | 6.9 M/s (6.4–6.9) |
+| 1,600 B | 0, 2 | 7.9 M/s (7.5–8.4) | 8.2 M/s (7.7–8.3) | 2.8 M/s (0.9–3.0) |
+| 1,600 B | 0, 1 | 7.4 M/s (7.1–7.8) | 8.5 M/s (8.4–8.6) | 3.2 M/s (3.1–3.2) |
+
+| Round trip, 16 B | CPUs | p50 | p99 | p99.9 |
+|---|---|---|---|---|
+| SPSC ring | 0, 2 | 340 ns | 490 ns | 1.9 µs |
+| SPSC ring | 0, 1 | 320 ns | 490 ns | 2.7 µs |
+| ring, no cached counters | 0, 2 | 170 ns | 480 ns | 1.8 µs |
+| ring, no cached counters | 0, 1 | 320 ns | 490 ns | 9.2 µs |
+| mutex + condvar | 0, 2 | 101 µs | 221 µs | 506 µs |
+| mutex + condvar | 0, 1 | 103 µs | 230 µs | 591 µs |
+
+- The mutex queue is ~4x slower under WSL2 than in the container (~100 µs per round trip):
+  its futex wake-up costs more there. The ring makes no system call, so it is faster on the
+  laptop (~0.33 µs), and the gap grows to ~300x.
+- Cached counters: 1.4x the throughput of 16-byte messages, nothing on the round trip. In
+  ping-pong the ring holds at most one message, so the cached copy of the other side's
+  counter is always stale and gets reloaded anyway; the cache pays off only when a backlog
+  builds, which is when the edge host needs throughput. (The uncached ring's 170 ns median at
+  CPUs 0 and 2 is one run; at 0 and 1 it matches the cached ring.)
+- Hyperthread siblings and separate cores measure the same within noise. The six cores of
+  the 7535HS share one L3, so a cache line moves between cores quickly; thread placement
+  should matter more on a machine with several L3 domains.
+
+## The edge host
+
+```
+ network thread (Asio)                                    analytics threads (N)
+  hsms::Session + gem::Host
+  S6F11 decoded in place ──map copied once──► SpscRing<WaferSlot> ──► extract signals, classify
+                                              (doorbell: spin, then futex)        │
+  DecisionRule (per lot, k of last W) ◄─eventfd─ SpscRing<Verdict> ◄───────────────┘
+  → S2F41 HOLD
+```
+
+- **Network thread.** `pipeline::EdgeCore` does the network thread's work without I/O: GEM
+  host events in, wafers out to the workers, verdicts back, the decision, the HOLD.
+  `pipeline::EdgeHost` runs it on an active `hsms::Session`. A wafer report is decoded in the
+  receive buffer (no copy) and its map copied once, into a free slot of the next worker's
+  ring (round robin). Slots are fixed-size: a lot id of up to 32 characters and up to 64 × 64
+  bins. Larger maps and longer ids are counted and skipped, never truncated.
+- **Analytics threads.** `pipeline::Analyzer` runs `SignalExtractor` and the fitted
+  `RuleClassifier` on the slot in place, pushes a verdict, and signals the network thread.
+  With nothing to do it spins for `--spin-us` (50 µs by default), then sleeps on a
+  `pipeline::Doorbell`.
+- **Waking threads without losing a wake-up.** The doorbell is an epoch to `atomic::wait` on
+  and a "sleeping" flag. The consumer announces itself (an exchange), rechecks the ring, and
+  only then sleeps. The producer, after each push, exchanges the flag back and makes the
+  futex call only if a sleeper had announced itself. Because both sides use a read-modify-
+  write, one of them always sees the other: either the producer sees the sleeper, or the
+  sleeper's recheck sees the push. The network thread sleeps in epoll instead, so verdicts
+  reach it through an eventfd that Asio reads. A `pending` flag turns a burst of verdicts into
+  one `write()`.
+- **Decision rule.** A lot is held once k of its last W verdicts show the same pattern other
+  than `none` (`--k 3 --window 5` by default). It runs on the network thread, the one place
+  where every worker's verdicts meet. Its state is a fixed table of the 64 most recently seen
+  lots.
+- **Full rings.** If every worker's ring is full (256 wafers each), the wafer is dropped and
+  counted. The S6F12 has already gone back, and stalling the network thread would stall the
+  tool.
+
+### What the tests check
+
+- `tests/test_edge.cpp`:
+  - The decision rule: k in a window, `none` never counts, different patterns don't add up,
+    the window slides, lots are independent, the least recently seen lot is forgotten.
+  - The doorbell: 200,000 messages, the consumer made to sleep thousands of times, and a
+    watchdog that counts lost wake-ups (none). With a relaxed load put in on purpose instead
+    of the producer's exchange, it lost a wake-up in 1 of 5 runs: a race that tests catch
+    only sometimes, which is why the design rests on the RMW argument.
+  - The analyzer, on the caller's thread and on its own thread.
+  - The edge core through GEM on a fake clock: the HOLD reaches the tool and its HCACK
+    returns; oversized maps, long lot ids and full rings are counted.
+- `tests/test_edge_host.cpp`: the closed loop over TCP against the tool emulator with two
+  workers and k = 1. The set of lots held must equal the set of lots in which the classifier,
+  run directly on the file, finds a pattern. Every hold must be answered with HCACK 0, and its
+  timestamps must be in order.
+- `waferedge-alloc-tests "[edge]"`: 100 rounds of report → classify → decide → HOLD → HCACK
+  on one thread, with zero allocations once warm.
+
+All of them run under TSan and ASan in CI.
+
+The closed-loop test found two ordering bugs, both fixed:
+- **Timestamps.** A single `now`, read before draining, could precede a verdict pushed during
+  the drain. Stamps are now read when each step happens.
+- **The end of a replay.** The host acknowledges a report before analysing it. The emulator
+  stops once every S6F12 is in, so it can leave before the last lot's HOLD arrives. A real
+  tool keeps running. The test stops the emulator only once the edge host has settled; the
+  command-line tools show the effect as one hold "decided" but not "answered".
+
+### Run it
+
+```sh
+build/release/tools/tool-emulator tests/data/waferlens_sample.wmap --port 5000 --rate 20 &
+build/release/tools/waferedge-edge --port 5000 --k 1 --window 1 --workers 2
+```
+
+On the sample (24 wafers, three per WaferLens class) with k = 1, the edge host holds 11 lots
+and the emulator withholds 10 wafers. The 11th hold is the end-of-replay effect above. The
+edge host prints the median time of each stage for the answered holds (received → analysed →
+decided → S2F41 sent → S2F42). These are only 10 samples, at 20 wafers/s, where every wafer
+finds the threads asleep, so wake-ups dominate. In the cloud container, received → analysed
+(waking the worker and classifying a 40 × 40 map) took ~0.2–0.3 ms with the worker asleep,
+and ~0.13 ms with the worker spinning through the 50 ms gap (`--spin-us 100000`). Phase 4's
+latency item measures this properly, with histograms from the tool's schedule. The laptop
+showed the same picture: received → analysed 232 µs, → decided 91 µs, → S2F41 sent 3 µs,
+→ S2F42 419 µs (medians of 10 holds, 2 workers, default spin).
+`--cpus NET,W1,...` pins the network thread and the workers.
 
 ## Reproduce
 
@@ -142,7 +258,9 @@ build/dev/tests/waferedge-tests "[emulator]"         # Replay on a fake clock, T
 build/release/bench/bench-emulator                   # the emulator's rate and lateness
 build/dev/tests/waferedge-tests "[ring]"             # the ring's tests (and under tsan)
 cmake --workflow --preset tsan                       # every test under ThreadSanitizer
-build/release/bench/bench-ring                       # the ring vs a mutex queue
+build/release/bench/bench-ring --cpus 0 2              # the ring vs a mutex queue, pinned
+build/dev/tests/waferedge-tests "[decision],[doorbell],[analyzer],[edge]"
+build/dev/tests/waferedge-alloc-tests "[edge]"       # the edge hot path allocates nothing
 build/release/tools/tool-emulator tests/data/waferlens_sample.wmap --port 5000 --rate 5 &
 python3 -m venv /tmp/secsgem-venv && /tmp/secsgem-venv/bin/pip install secsgem==0.3.0
 /tmp/secsgem-venv/bin/python tools/secsgem_host.py --port 5000 --hold LOT-000281

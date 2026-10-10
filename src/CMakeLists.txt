@@ -18,6 +18,10 @@ add_library(waferedge
   machine.cpp
   map_file.cpp
   randomness.cpp
+  pipeline/analyzer.cpp
+  pipeline/decision.cpp
+  pipeline/edge_core.cpp
+  pipeline/edge_host.cpp
   hsms/protocol.cpp
   hsms/session.cpp
   secs/encoder.cpp

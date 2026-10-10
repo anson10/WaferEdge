@@ -10,6 +10,8 @@ add_executable(waferedge-tests
   test_classifier.cpp
   test_clusters.cpp
   test_cnn.cpp
+  test_edge.cpp
+  test_edge_host.cpp
   test_features.cpp
   test_gem.cpp
   test_gem_messages.cpp
@@ -42,10 +44,11 @@ add_library(waferedge_alloc_counter OBJECT support/alloc_counter.cpp)
 target_include_directories(waferedge_alloc_counter PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(waferedge_alloc_counter PRIVATE waferedge_options)
 
-add_executable(waferedge-alloc-tests test_gem_alloc.cpp test_hsms_alloc.cpp test_secs_alloc.cpp)
+add_executable(waferedge-alloc-tests test_edge_alloc.cpp test_gem_alloc.cpp test_hsms_alloc.cpp test_secs_alloc.cpp)
 target_link_libraries(waferedge-alloc-tests
   PRIVATE waferedge waferedge_synth waferedge_alloc_counter waferedge_options
           Catch2::Catch2WithMain)
+target_compile_definitions(waferedge-alloc-tests PRIVATE WAFEREDGE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 catch_discover_tests(waferedge-alloc-tests)
 
 # GPU tests run locally only (CI has no GPU); `ctest -L gpu` selects them.

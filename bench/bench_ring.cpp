@@ -2,9 +2,12 @@
 // counters: throughput (messages/s, one producer and one consumer thread) and round-trip
 // latency (ping-pong between two queues, percentiles from a 10 ns histogram).
 //
-//   build/release/bench/bench-ring
+//   build/release/bench/bench-ring [--cpus A B]
 //
-// Threads are pinned to CPUs 0 and 1 when the OS allows it (said in the output).
+// The producer is pinned to CPU A and the consumer to CPU B (default 0 and 1) when the OS
+// allows it. Which pair matters: two hyperthreads of one core share its L1 and L2 caches,
+// two cores only the L3. On the laptop CPUs 0 and 1 are siblings
+// (/sys/devices/system/cpu/cpu0/topology/thread_siblings_list), 0 and 2 separate cores.
 #include "waferedge/pipeline/spsc_ring.hpp"
 
 #include <algorithm>
@@ -17,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -102,6 +106,8 @@ struct Payload {
 };
 
 bool pinned = true;
+std::size_t cpu_a = 0; // producer, ping side
+std::size_t cpu_b = 1; // consumer, echo side
 
 template <typename Queue>
 double throughput(std::uint64_t n) {
@@ -110,14 +116,14 @@ double throughput(std::uint64_t n) {
     std::uint64_t sum = 0;
     const auto start = Clock::now();
     std::thread consumer([&] {
-        pinned = pin(std::size_t{1}) && pinned;
+        pinned = pin(cpu_b) && pinned;
         T v;
         for (std::uint64_t i = 0; i < n; ++i) {
             ring_pop(*q, v);
             sum += v.seq;
         }
     });
-    pinned = pin(std::size_t{0}) && pinned;
+    pinned = pin(cpu_a) && pinned;
     T v;
     for (std::uint64_t i = 0; i < n; ++i) {
         v.seq = i;
@@ -144,14 +150,14 @@ Latency round_trip(std::uint64_t n) {
     auto q2 = std::make_unique<Queue>();
     std::vector<std::uint64_t> histogram(100'000); // 10 ns buckets up to 1 ms
     std::thread echo([&] {
-        pin(std::size_t{1});
+        pin(cpu_b);
         T v;
         for (std::uint64_t i = 0; i < n; ++i) {
             ring_pop(*q1, v);
             ring_push(*q2, v);
         }
     });
-    pin(std::size_t{0});
+    pin(cpu_a);
     T v;
     for (std::uint64_t i = 0; i < n; ++i) {
         v.seq = i;
@@ -206,7 +212,14 @@ void row(const char* payload, std::uint64_t n) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 4 && std::string_view(argv[1]) == "--cpus") {
+        cpu_a = std::stoul(argv[2]);
+        cpu_b = std::stoul(argv[3]);
+    } else if (argc != 1) {
+        std::fputs("usage: bench-ring [--cpus A B]\n", stderr);
+        return 2;
+    }
     constexpr std::size_t N = 1024;
     std::puts("Throughput, one producer and one consumer (median of 3 runs, range):\n");
     std::puts(
@@ -228,5 +241,6 @@ int main() {
     print("SPSC ring", round_trip<SpscRing<Payload<16>, N>>(1'000'000));
     print("ring, no cached counters", round_trip<SpscRing<Payload<16>, N, false>>(1'000'000));
     print("mutex + condvar", round_trip<MutexQueue<Payload<16>, N>>(200'000));
-    std::puts(pinned ? "\n(threads pinned to CPUs 0 and 1)" : "\n(threads not pinned)");
+    std::puts(pinned ? std::format("\n(threads pinned to CPUs {} and {})", cpu_a, cpu_b).c_str()
+                     : "\n(threads not pinned)");
 }

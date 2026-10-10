@@ -36,10 +36,23 @@ thread waits when the ring is empty (spin, yield, sleep) is the edge host's choi
 - Measured (`bench-ring`, 4-thread cloud container, median of 3 runs): 16-byte messages
   29 M/s vs 4.4 M/s through the mutex queue (7x); 1,600-byte maps 4.6 vs 1.4 M/s (3x);
   round trip 740 ns vs 27 µs at the median (36x), 19 µs vs 217 µs at p99.9.
-- The cached counters matter less than their reputation here: 29 vs 12 M/s for 16-byte
-  messages at the median, but with run-to-run ranges that overlap (10.7–25.1 uncached), and
-  740 vs 850 ns per round trip. On this VM two "cores" may share caches; the laptop's run,
-  with real separate L2 caches, will tell. The design keeps them: they cost two words.
+- On the laptop (Ryzen 5 7535HS, 6 cores / 12 threads, WSL2, release build): 16-byte messages
+  22.7–23.7 M/s vs 6.8–6.9 M/s through the mutex queue (3x); 1,600-byte maps 7.4–7.9 vs
+  2.8–3.2 M/s; round trip 320–340 ns vs ~100 µs at the median (~300x), 1.9–2.7 µs vs
+  0.5–0.6 ms at p99.9. Under WSL2 the futex wake-up of the mutex queue costs ~4x what it
+  costs in the cloud container; the ring doesn't make that system call.
+- The cached counters help throughput when the ring holds a backlog: 23.7 vs 17.2 M/s for
+  16-byte messages on the laptop (1.4x; at CPUs 0 and 1 the run ranges don't overlap). They
+  don't help a round trip (320 ns either way): in ping-pong the ring holds at most one message,
+  so the cached copy is always stale and every operation reloads it anyway. At 1,600 bytes the
+  copy dominates and the uncached ring is slightly ahead (8.2–8.5 vs 7.4–7.9 M/s). The design
+  keeps them: they cost two words, and the edge host's rings back up exactly when it matters.
+- Hyperthread siblings (CPUs 0 and 1, sharing L1 and L2) and separate cores (0 and 2) measured
+  the same within run-to-run noise: 22.7 vs 23.7 M/s, 320 vs 340 ns. The guess that siblings
+  explained the first laptop run (no gain from caching) was wrong; the round trip simply
+  can't show the gain, as above. A likely reason the two pinnings match: the 7535HS's six
+  cores share one 16 MB L3, so a cache line crosses between cores in tens of nanoseconds. On
+  a machine with several L3 domains or sockets, placement would matter more.
 - Correctness rests on two acquire / release pairs that x86 hides: with the producer's
   release store made relaxed, the stress test still passed on this machine, but
   ThreadSanitizer reported the data race on the slot at once. The ring's tests run under
