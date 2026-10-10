@@ -225,12 +225,15 @@ Putting it together, closed loop, with honest tail latency.
       CPU rules 0.3–0.5 ms median, GPU rules 2–3.5 ms (deadline + one WSL2 call), CNN
       fp16 batch 8 / 0.5 ms 1.4 ms; CNN CPU ~20 maps/s; CNN 98.3% of wafers right vs rules
       97.4%, holds 12 vs 11 of 16 excursion lots, one wrong hold)
-- [ ] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,
+- [x] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,
       against WaferLens's batch pattern alarm (median 52 h, mostly sort lag) and against no hold
-      (in progress: `waferedge-closedloop`, a sort-time replay of the live rule, ADR-0017;
-      results to measure on the laptop's demo set)
-- [ ] `docs/pipeline.md` and an ADR (threading and queue design)
-      (docs/pipeline.md: the emulator, the ring, the edge host; ADR-0013 ring, ADR-0014 threads)
+      (`waferedge-closedloop`, a sort-time replay of the live rule, ADR-0017: 13 of 13 held;
+      default 3 of 5 is slower than WaferLens after the first patterned wafer reaches sort,
+      8.1 h vs 3.0 h median, 147 vs 72 patterned wafers sorted first, of 1,891; 2 of 5 is
+      faster, 2.5 h and 37 wafers, 2 false holds; 1 of 1 gives 51 false holds)
+- [x] `docs/pipeline.md` and an ADR (threading and queue design)
+      (docs/pipeline.md: the emulator, the ring, the edge host, latency, experiments, the closed
+      loop; ADR-0012 to ADR-0017)
 
 ## Phase 5 — Python bindings and launch (2–3 days)
 

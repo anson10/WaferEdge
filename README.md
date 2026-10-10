@@ -41,13 +41,19 @@ receive buffer, encoding into a reused buffer), the HSMS transport (a state mach
 a fake clock, driven over TCP by Asio coroutines, ~7 µs per loopback transaction) and a GEM
 subset (communication and control state machines, the wafer report, the lot hold), with 0
 allocations per message and all three layers fuzzed with libFuzzer in CI
-([docs/secs.md](docs/secs.md), ADR-0009 to ADR-0011). Phase 4 (the closed loop) has started:
+([docs/secs.md](docs/secs.md), ADR-0009 to ADR-0011). Phase 4 (the closed loop) is complete:
 the tool emulator replays wafer maps over HSMS on an open-loop constant-rate schedule and
 honours lot holds (ADR-0012). The edge host (`waferedge-edge`) receives the wafer reports on
 a network thread, classifies them on analytics threads fed through lock-free SPSC rings, and
 holds a lot after k of its last W wafers show the same signature. The hot path makes 0
 allocations, and the closed loop runs in a test against the emulator over TCP
-([docs/pipeline.md](docs/pipeline.md), ADR-0013, ADR-0014). Measuring its latency is next.
+([docs/pipeline.md](docs/pipeline.md), ADR-0013, ADR-0014). On the laptop, sort result →
+decision takes 0.3–0.5 ms median with the CPU rules at 100–10,000 wafers/s, measured from the emulator's
+schedule so coordinated omission is counted (ADR-0015, ADR-0016). Replayed over WaferLens's
+demo set, the holds catch all 13 spatial excursions; with the default rule (3 of a lot's last
+5 wafers) they come later than WaferLens's batch alarm after the first patterned wafer
+reaches sort (8.1 h vs 3.0 h median), and with 2 of 5 earlier (2.5 h, 37 vs 72 patterned
+wafers sorted first, 2 false holds) (ADR-0017, `waferedge-closedloop --sweep`).
 
 ## Build
 
