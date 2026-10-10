@@ -1,9 +1,9 @@
 # SECS-II and HSMS
 
 How the tool emulator and the edge host talk: the equipment protocol stack fabs use, from the
-bytes up. This page covers what is implemented so far, the **SECS-II item codec** (phase 3,
-first part). HSMS framing, the connection state machine and the GEM messages are added as
-they land. Code: `include/waferedge/secs/`, `src/secs/`; design decision: ADR-0009.
+bytes up. This page covers what is implemented so far: the **SECS-II item codec** (code:
+`include/waferedge/secs/`, `src/secs/`; ADR-0009) and the **HSMS transport** (code:
+`include/waferedge/hsms/`, `src/hsms/`; ADR-0010). The GEM messages are added when they land.
 
 SEMI E5 (SECS-II), E37 (HSMS) and E30 (GEM) are paid standards. This implementation works from
 public descriptions and open-source implementations (secsgem, secs4net), covers a subset, and
@@ -14,8 +14,9 @@ is not certified against the standards.
 ```
  GEM (E30)       which messages a tool must support and what they mean:
                  S1F13 establish communication, S6F11 event report, S2F41 host command, ...
- SECS-II (E5)    the message body: one item, a self-describing tree    <- this page
+ SECS-II (E5)    the message body: one item, a self-describing tree    <- implemented
  HSMS (E37)      TCP: 4-byte length, 10-byte header (session, stream, function, system bytes)
+                 select, linktest, timers                              <- implemented
 ```
 
 A message is named **SxFy**: stream x (a topic: 1 equipment status, 2 control, 5 alarms, 6
@@ -186,13 +187,140 @@ Fuzzing, same container: 6 workers × 600 s, 49 M executions under ASan + UBSan,
 coverage stopped growing (469 edges) after the first minutes. The minimising merge kept 473
 inputs (93 KB).
 
+## HSMS: the transport
+
+### Frames
+
+TCP has no message boundaries, so HSMS adds them. Every message is a 4-byte big-endian
+length (the bytes that follow), a 10-byte header, and the body:
+
+| Header bytes | Data message | Control message |
+|---|---|---|
+| 0–1 | session id (device id) | 0xFFFF (Select, Deselect, Linktest, Separate) |
+| 2 | W-bit (reply expected) and stream | depends on the SType; Reject: the rejected SType |
+| 3 | function | status (Select.rsp, Deselect.rsp) or reason (Reject) |
+| 4 | PType: 0 (SECS-II) | 0 |
+| 5 | SType: 0 | 1 Select.req, 2 .rsp, 3 Deselect.req, 4 .rsp, 5 Linktest.req, 6 .rsp, 7 Reject, 9 Separate |
+| 6–9 | system bytes: the transaction id, copied by the reply | the same, per control transaction |
+
+So the Select.req the edge host opens with is 14 bytes:
+`00 00 00 0A | FF FF 00 00 00 01 00 00 00 01` (length 10; session 0xFFFF, PType 0, SType 1,
+system bytes 1). The reply to S6F11 (stream 6, function 11, W-bit set: byte 2 = 0x86) is
+S6F12 with the same system bytes; that, not the order of arrival, pairs them.
+
+### States and timers
+
+```
+ NOT CONNECTED --TCP up--> NOT SELECTED --Select.req / .rsp ok--> SELECTED
+       ^                      |      ^                                |
+       +------ Separate, a timer, the TCP connection lost ------+  +-- Deselect
+```
+
+The **active** side (the host) connects and sends Select.req; the **passive** side (the tool)
+listens and answers. Data messages are only accepted in SELECTED; anything else gets a
+Reject.req (entity not selected). Timers, all configurable (`hsms::Config`):
+
+| Timer | Default | Implemented as |
+|---|---|---|
+| T3 reply | 45 s | per open transaction (a primary with the W-bit); expiry reports `ReplyTimeout` and closes the transaction, not the connection; a later reply is `unmatched_reply` |
+| T5 connect separation | 10 s | the active side waits T5 after a close or a failed connect |
+| T6 control transaction | 5 s | no Select / Deselect / Linktest response: close |
+| T7 not selected | 10 s | connected for T7 without SELECTED: close |
+| T8 network intercharacter | 5 s | a frame half-received with no new byte for T8: close |
+| Linktest period | off | Linktest.req every period while SELECTED; no answer in T6 closes |
+
+Other rules: a length below 10 or above `max_message` (16 MiB + header by default) closes the
+connection as soon as the 4 length bytes arrive. An unknown SType or a PType other than 0
+gets a Reject.req. A response with no matching request gets "transaction not open". A
+second Select.req gets "already active", and a Reject.req is never rejected back. Both
+sides may select at the same time.
+
+### Design: an engine without I/O, a driver with coroutines
+
+The rules above live in `hsms::Protocol`, which has no socket and no clock. It takes received
+bytes (`receive_buffer`, `on_received`) and the current time, and gives back events
+(`poll`: `Selected`, `DataMessage`, `ReplyTimeout`, `Rejected`, `Closed`, ...), bytes to send
+(`take_output`) and its next deadline. That makes every timer testable on a fake clock, at
+its deadline and one nanosecond before, without sleeping.
+
+`hsms::Session` drives it over TCP with three Asio C++20 coroutines per connection: a reader
+(socket → engine → events to the handler), a writer (engine output → socket), and a sleeper
+woken at the engine's next deadline. They are joined with Asio's `&&`. When the connection
+ends (EOF, a protocol close), `finish()` closes the socket and wakes the timers, and all three
+return. `run_active` reconnects after T5; `run_passive` serves one connection at a time. A
+Session is single-threaded: other threads post to its executor.
+
+No allocation once warm: the engine's receive and output buffers and its table of 64 open
+transactions are reused, and output reaches the writer by swapping two vectors (so a write in
+flight is never invalidated by the handler sending more). Asio recycles coroutine frames per
+thread. One trap, found by the allocation test in the Clang build: joining the coroutines
+with `||` (cancel the others when one ends) makes Asio keep a cancellation handler per
+operation, and with libc++ a socket write's (40 bytes) and a timer wait's (32) differ, so
+the writer's slot was freed and reallocated on every transaction: 2 allocations with Clang, 0
+with GCC. Operations now carry no cancellation slot and the driver ends connections itself.
+
+**Implemented subset:** HSMS-SS (one session per connection), one control transaction at a
+time. **Out of scope:** HSMS-GS (several sessions on one connection), a passive side that
+refuses connections (Select.rsp "not ready" is understood when received but never sent), and
+TLS (the SEMI standards don't define it either).
+
+### How HSMS is tested
+
+- **Protocol engine** (`tests/test_hsms_protocol.cpp`, 21 cases, fake clock): the select
+  handshake with its exact bytes, transactions and their replies, every timer at its deadline
+  and one tick before, linktests, Deselect, Separate, every Reject reason, select refused by
+  status or by Reject, simultaneous select, bad and oversized lengths, send errors, a full
+  transaction table, and 50 random splits of a 40-message stream giving the same messages.
+- **TCP** (`tests/test_hsms_session.cpp`, on 127.0.0.1 with short timers): select, an
+  S1F1/S1F2 transaction and Separate; the active side reconnecting T5 after the passive side
+  separates; a silent client closed after T7; periodic linktests keeping a quiet link up;
+  1,000 back-to-back transactions with every reply matched.
+- **Allocations** (`tests/test_hsms_alloc.cpp`): 0 per transaction for the engine and for
+  two Sessions over TCP, after warm-up, in the GCC and the Clang + libc++ builds.
+- **Fuzzing** (`fuzz/hsms_frames_target.cpp`): arbitrary bytes fed to a passive engine in
+  chunks of 1–128 bytes on a moving fake clock, answering every primary. Its own output must
+  parse as frames, data must only arrive in SELECTED, and after an hour of fake time an
+  unselected connection must be closed. The corpus in `fuzz/corpus/hsms_frames` is replayed
+  in every build. CI fuzzes it for 60 s next to the codec.
+
+### HSMS measurements
+
+`build/release/bench/bench-hsms --benchmark_repetitions=3` (medians; Release, GCC 13.3), in
+the **same 4-thread cloud container** as the codec numbers, not the laptop. A transaction is a
+primary with the W-bit and its empty reply, closed loop. Both Sessions share one thread and
+one `io_context`, so the TCP times include both ends' work and two trips through the
+kernel's loopback.
+
+| Transaction body | Engine only, in memory | TCP loopback: mean | p50 | p99 | p99.9 | Allocations |
+|---|---|---|---|---|---|---|
+| empty | 180 ns | 7.2 µs | 6 µs | 20 µs | 46 µs | 0 |
+| 1,600 B (40×40 map) | 217 ns | 7.2 µs | 6 µs | 21 µs | 42 µs | 0 |
+| 40,000 B (200×200 map) | 2.8 µs | 11.6 µs | 10 µs | 32 µs | 76 µs | 0 |
+
+- **The protocol costs ~0.2 µs per transaction; TCP costs ~7 µs.** The tails (p99.9) move
+  by tens of µs between runs on a shared cloud machine; the medians are stable. The engine's share is
+  the frame copy (into the output buffer, then into the peer's receive buffer); the rest is
+  system calls and wake-ups. That gap is why the hot path's design effort goes into not
+  allocating and not copying, rather than into the protocol logic itself.
+- Percentiles come from a 1 µs histogram over every iteration. The loop is closed (the next
+  primary waits for the reply), so these are round-trip service times on an idle link, not
+  latency under load; phase 4 measures the pipeline at a constant offered rate, where
+  coordinated omission matters.
+- 0 allocations per transaction over TCP, Asio coroutines included, after 100 warm-up
+  transactions (`tests/test_hsms_alloc.cpp` checks the same).
+
+Fuzzing, same container: 3 workers × 600 s, 34 M executions under ASan + UBSan, no crash;
+the minimising merge kept 213 inputs (56 KB).
+
 ## Reproduce
 
 ```sh
 cmake --workflow --preset dev                       # all tests, codec included
 cmake --workflow --preset asan                      # the same under ASan + UBSan
+build/dev/tests/waferedge-tests "[hsms]"            # HSMS: fake-clock and TCP tests
 build/dev/tests/waferedge-alloc-tests               # 0 allocations on the hot path
 cmake --workflow --preset release && build/release/bench/bench-secs
+build/release/bench/bench-hsms                      # transactions/s, round trips, allocations
 
 # Fuzzing (Clang 18 + libFuzzer; needs libclang-rt-18-dev and libc++-18-dev):
 cmake --preset fuzz && cmake --build --preset fuzz
@@ -202,11 +330,14 @@ build/fuzz/fuzz/fuzz-secs-item -max_total_time=600 -jobs=6 -workers=6 \
     /tmp/secs-corpus fuzz/corpus/secs_item
 # Keep what is new, minimised, in the checked-in corpus:
 build/fuzz/fuzz/fuzz-secs-item -merge=1 fuzz/corpus/secs_item /tmp/secs-corpus
+# The same for HSMS framing:
+mkdir -p /tmp/hsms-corpus
+build/fuzz/fuzz/fuzz-hsms-frames -max_total_time=600 /tmp/hsms-corpus fuzz/corpus/hsms_frames
 ```
 
 New inputs go to the first directory given; the checked-in corpus is only read, except by
 `-merge=1`. A crash writes `crash-<sha1>` to the working directory: fix the bug and copy the
-file into `fuzz/corpus/secs_item`, which makes it a regression test.
+file into `fuzz/corpus/secs_item` (or `hsms_frames`), which makes it a regression test.
 
 The golden vectors came from secsgem in a throwaway virtualenv
 (`pip install secsgem==0.3.0`); e.g. `secsgem.secs.variables.String("LOT-1").encode()` gives
