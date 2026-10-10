@@ -36,9 +36,11 @@ CNN runs on WaferEdge's own GEMM ladder and implicit-GEMM convolutions on the GP
 and int8 tensor cores), with FabEye's macro-F1 and conformal coverage in every precision,
 ~11,000 (fp16) to ~13,000 (int8) maps/s, and ~0.45 ms for a single map in int8 with the
 forward pass replayed as a CUDA Graph ([docs/inference.md](docs/inference.md)). Phase 3 (the
-equipment protocol) has started with the SECS-II item codec: zero-copy decoding to views over
-the receive buffer, encoding into a reused buffer, 0 allocations per message, fuzzed with
-libFuzzer in CI ([docs/secs.md](docs/secs.md), ADR-0009).
+equipment protocol) is under way: the SECS-II item codec (zero-copy decoding to views over
+the receive buffer, encoding into a reused buffer) and the HSMS transport (a state machine
+tested on a fake clock, driven over TCP by Asio coroutines, ~7 µs per loopback transaction),
+both with 0 allocations per message and fuzzed with libFuzzer in CI
+([docs/secs.md](docs/secs.md), ADR-0009, ADR-0010). The GEM messages come next.
 
 ## Build
 

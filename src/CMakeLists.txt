@@ -12,13 +12,16 @@ add_library(waferedge
   machine.cpp
   map_file.cpp
   randomness.cpp
+  hsms/protocol.cpp
+  hsms/session.cpp
   secs/encoder.cpp
   secs/item.cpp
   thread_pool.cpp
   wafer_map.cpp)
 add_library(waferedge::waferedge ALIAS waferedge)
 target_include_directories(waferedge PUBLIC ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(waferedge PRIVATE waferedge_options)
+# Public: hsms/session.hpp includes Asio.
+target_link_libraries(waferedge PUBLIC asio::asio PRIVATE waferedge_options)
 target_compile_definitions(waferedge
   PRIVATE
     WAFEREDGE_VERSION="${PROJECT_VERSION}"

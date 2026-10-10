@@ -144,9 +144,13 @@ the machine, and the design sketch. Read both before starting work.
 - `build/release/bench/bench-secs`: SECS-II decode / encode, messages/s and allocations per
   message (the wafer report by map size, the S2F41 hold); `build/dev/tests/waferedge-alloc-tests`
   fails on any allocation in the codec's hot path.
+- `build/release/bench/bench-hsms`: HSMS transactions, the engine in memory and two Sessions
+  over TCP loopback (p50 / p99 / p99.9, allocations per transaction);
+  `build/dev/tests/waferedge-tests "[hsms]"`: the fake-clock and TCP tests.
 - `cmake --preset fuzz && cmake --build --preset fuzz`, then
-  `build/fuzz/fuzz/fuzz-secs-item -max_total_time=60 /tmp/secs-corpus fuzz/corpus/secs_item`:
-  the SECS-II decoder under libFuzzer (docs/secs.md: merging the corpus, crash files).
+  `build/fuzz/fuzz/fuzz-secs-item -max_total_time=60 /tmp/secs-corpus fuzz/corpus/secs_item`
+  (or `fuzz-hsms-frames ... fuzz/corpus/hsms_frames`): the SECS-II decoder and HSMS framing
+  under libFuzzer (docs/secs.md: merging the corpus, crash files).
 - `pre-commit run --all-files`: whitespace, YAML/JSON, clang-format 18.
 - `clang-tidy-18 -p build/clang <files>`: use the clang build's compile commands; with GCC's
   libstdc++, Clang 18 can't see `std::expected`.

@@ -160,26 +160,29 @@ The equipment protocol, from the bytes up.
       encode into a reusable buffer (C2 out of scope; iterative validation, 64 levels max)
 - [x] `constexpr` format tables; `std::expected`-style (or own `Result`) error handling, no
       exceptions on the hot path (`Error{code, offset}`; the encoder's errors are sticky)
-- [ ] **HSMS** (SEMI E37) transport on Asio coroutines: 10-byte header, data and control
+- [x] **HSMS** (SEMI E37) transport on Asio coroutines: 10-byte header, data and control
       messages, Select / Deselect / Linktest / Separate, T3 / T5 / T6 / T7 / T8 timers,
       reconnect; active (host) and passive (equipment) roles
-- [ ] HSMS connection state machine as an explicit, tested type
+      (HSMS-SS; a sans-I/O engine driven by three coroutines per connection, ADR-0010;
+      loopback round trip ~7 µs, 0 allocations per transaction)
+- [x] HSMS connection state machine as an explicit, tested type (`hsms::Protocol`, 21
+      fake-clock tests: every timer at its deadline and one tick before)
 - [ ] GEM subset (SEMI E30): S1F1/F2 (are you there), S1F13/F14 (establish communication),
       S6F11/F12 (event report: carries the wafer map and lot/wafer ids), S5F1/F2 (alarm),
       S2F41/F42 (host command: HOLD / RELEASE lot); communication and control state machines
-- [ ] Tests: round-trip properties (encode → decode is identity) on random item trees; golden
+- [x] Tests: round-trip properties (encode → decode is identity) on random item trees; golden
       byte vectors for known messages; timer behaviour with a fake clock
-      (codec done: 3,000 random trees, golden bytes from secsgem; timers with HSMS)
-- [ ] **Fuzzing**: libFuzzer target on the decoder (and HSMS framing), run in CI for a fixed
+      (3,000 random trees, golden bytes from secsgem, HSMS timers on a fake clock, TCP tests
+      on loopback)
+- [x] **Fuzzing**: libFuzzer target on the decoder (and HSMS framing), run in CI for a fixed
       time; corpus checked in; any crash becomes a regression test
-      (decoder done, with a round-trip oracle, 60 s in CI, corpus replayed by every build;
-      HSMS framing with HSMS)
-- [ ] Benchmark: messages/s decoded and encoded, allocation count per message (should be 0)
-      (codec done: `bench-secs`, 0 allocations per message decoded or encoded; HSMS to come)
+      (both targets with oracles, 60 s each in CI, corpora replayed by every build)
+- [x] Benchmark: messages/s decoded and encoded, allocation count per message (should be 0)
+      (`bench-secs`, `bench-hsms`: 0 allocations per message, codec and TCP session)
 - [ ] `docs/secs.md`: the subset implemented, message layouts used, what is out of scope
-      (the codec part written)
-- [ ] ADRs: zero-copy views and error handling; Asio coroutines for HSMS
-      (ADR-0009: zero-copy views and errors)
+      (codec and HSMS written; GEM to come)
+- [x] ADRs: zero-copy views and error handling; Asio coroutines for HSMS
+      (ADR-0009, ADR-0010)
 
 ## Phase 4 — The edge pipeline (3–4 days)
 

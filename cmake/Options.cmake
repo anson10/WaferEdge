@@ -18,6 +18,11 @@ if(WAFEREDGE_SANITIZE)
   endif()
   target_compile_options(waferedge_options INTERFACE
     $<$<COMPILE_LANGUAGE:CXX>:-fsanitize=${_san} -fno-omit-frame-pointer -fno-sanitize-recover=all>)
+  if(WAFEREDGE_SANITIZE STREQUAL "thread" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # GCC warns that TSan doesn't model std::atomic_thread_fence, which Asio uses inside its
+    # scheduler. Each hsms::Session runs on one thread; the warning is about Asio, not us.
+    target_compile_options(waferedge_options INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-tsan>)
+  endif()
   if(NOT WAFEREDGE_SANITIZE STREQUAL "fuzzer")
     target_link_options(waferedge_options INTERFACE -fsanitize=${_san})
   else()
