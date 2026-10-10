@@ -200,7 +200,8 @@ Putting it together, closed loop, with honest tail latency.
       doorbell; verdicts wake the network thread through an eventfd; `waferedge-edge`)
 - [x] Lock-free queue tests: TSan, a stress test with a checker, a benchmark against a mutex
       queue (`pipeline::SpscRing`, ADR-0013: 7x the mutex queue's throughput, round trip
-      0.74 vs 27 µs; TSan catches a deliberately relaxed release store)
+      0.74 vs 27 µs in the cloud container; laptop 3x, 0.33 vs ~100 µs, the same on hyperthread
+      siblings and separate cores; TSan catches a deliberately relaxed release store)
 - [x] **Allocation-free hot path**: `std::pmr` / arena buffers; a test that fails on any
       allocation per message
       (fixed-size ring slots and tables sized at start-up instead of `std::pmr`:
