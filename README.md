@@ -43,7 +43,11 @@ subset (communication and control state machines, the wafer report, the lot hold
 allocations per message and all three layers fuzzed with libFuzzer in CI
 ([docs/secs.md](docs/secs.md), ADR-0009 to ADR-0011). Phase 4 (the closed loop) has started:
 the tool emulator replays wafer maps over HSMS on an open-loop constant-rate schedule and
-honours lot holds ([docs/pipeline.md](docs/pipeline.md), ADR-0012).
+honours lot holds (ADR-0012). The edge host (`waferedge-edge`) receives the wafer reports on
+a network thread, classifies them on analytics threads fed through lock-free SPSC rings, and
+holds a lot after k of its last W wafers show the same signature. The hot path makes 0
+allocations, and the closed loop runs in a test against the emulator over TCP
+([docs/pipeline.md](docs/pipeline.md), ADR-0013, ADR-0014). Measuring its latency is next.
 
 ## Build
 
