@@ -146,8 +146,9 @@ facts (layers, preprocessing, calibration) are in docs/context.md.
 - [x] Benchmark: wafers/s and per-batch latency against ONNX Runtime CPU (FabEye's ~412/s) and
       GPU, PyTorch, and TensorRT if installable; Nsight profile of the hottest kernel
       (TensorRT not installed; ONNX Runtime CPU and PyTorch GPU measured on this machine)
-- [ ] The CNN as a third detector in the pipeline (phase 4) next to the rules; agreement / fusion
+- [x] The CNN as a third detector in the pipeline (phase 4) next to the rules; agreement / fusion
       of rule-based and CNN signals reported
+      (`--detector cnn-fp16+rules`: 98% agreement on WaferLens; docs/pipeline.md)
 - [x] `docs/inference.md` (the GEMM ladder table, quantisation results, coverage check)
 - [x] ADR-0008: own kernels instead of TensorRT/ONNX Runtime (why: learning and control; what
       it costs), and the int8 scheme
@@ -218,10 +219,12 @@ Putting it together, closed loop, with honest tail latency.
       20,000 wafers/s on one worker, ~32,000/s saturates it into counted drops; laptop:
       p99 0.7–2.3 ms at 1,000–5,000/s, real WaferLens maps 10,000/s without drops, and a
       rare 1.1–1.5 s whole-process pause under WSL2, not reproduced in six more runs)
-- [ ] Experiments: rules on CPU vs GPU vs the CNN (fp16 / int8), batch size / deadline, load
+- [x] Experiments: rules on CPU vs GPU vs the CNN (fp16 / int8), batch size / deadline, load
       (maps/s) vs tail latency
-      (in progress: `pipeline::Detector` for every one of them, batches by size or deadline,
-      ADR-0016; CPU rows measured, GPU and CNN rows to measure on the laptop)
+      (`pipeline::Detector` for every one, batches by size or deadline, ADR-0016; laptop:
+      CPU rules 0.3–0.5 ms median, GPU rules 2–3.5 ms (deadline + one WSL2 call), CNN
+      fp16 batch 8 / 0.5 ms 1.4 ms; CNN CPU ~20 maps/s; CNN 98.3% of wafers right vs rules
+      97.4%, holds 12 vs 11 of 16 excursion lots, one wrong hold)
 - [ ] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,
       against WaferLens's batch pattern alarm (median 52 h, mostly sort lag) and against no hold
 - [ ] `docs/pipeline.md` and an ADR (threading and queue design)

@@ -397,8 +397,55 @@ At 10,000/s a batch of 16 fills in 1.6 ms; a batch of 64 never fills and ends at
 deadline. All rows held the same 12 / 120 lots with 100% precision and recall: batching
 changes when a decision is made, not what it is.
 
-The GPU and CNN rows need the laptop (the container has no GPU and no FabEye model). They
-come from the commands under Reproduce, and are added here when measured.
+### Every detector on the laptop
+
+WaferLens demo maps (real, 24² to 40²), hold after 3 of 5, one worker; laptop (Ryzen 5
+7535HS, RTX 3050 Laptop, WSL2), `cuda` build. The rules' row is from the latency runs above
+(batch 1); `rules-gpu` gives the same verdict as `rules` on every map (GPU test), so its
+accuracy columns stand for both.
+
+| Detector | Batch / deadline | 100/s p50 · p99 | 1,000/s p50 · p99 | 10,000/s p50 · p99 | Dropped at 10,000/s |
+|---|---|---|---|---|---|
+| `rules` (CPU) | 1 / – | 0.53 · 1.1 ms | 0.38 · 0.83 ms | 0.31 · 15.2 ms | 0 |
+| `rules-gpu` | 64 / 2 ms | 3.5 · 4.4 ms | 2.2 · 4.8 ms | 2.3 · 5.1 ms | 0 |
+| `cnn-fp16+rules` | 64 / 2 ms | 6.4 · 7.1 ms | 2.7 · 11.5 ms | 27.5 · 69.7 ms | 4,935 of 24,090 |
+| `cnn-int8+rules` | 64 / 2 ms | 5.5 · 6.2 ms | 2.7 · 7.6 ms | 26.0 · 49.0 ms | 4,014 of 24,078 |
+| `cnn-fp16` | 8 / 0.5 ms | | 1.4 · 2.4 ms | | |
+| `cnn-fp16` | 256 / 10 ms | | 6.5 · 11.7 ms | | |
+| `cnn-cpu` | 1 / – | 19.5 · 23.8 **s** | 13.4 · 23.6 **s** | | (1,528 of 2,000 at 100/s) |
+
+Accuracy at 1,000 wafers/s in the same runs (2,830–2,870 wafers, 16 excursion lots):
+
+| Detector | Wafers right | Held lots | Precision | Recall | Agreement with rules |
+|---|---|---|---|---|---|
+| rules (CPU or GPU) | 97.4% | 11 | 100% | 68.8% | – |
+| CNN fp16 | 98.3% | 13 | 92.3% | 75.0% | 98.0% |
+| CNN int8 | 98.3% | 13 | 92.3% | 75.0% | 98.0% |
+
+What they say:
+- **The CNN on the CPU is out of the question at the edge:** the plain reference forward pass
+  does ~20 maps/s. Even at 100 wafers/s three quarters were dropped, and the rest waited
+  13–24 s in a full ring. It exists to be correct, not fast.
+- **On the GPU, latency is the batch deadline plus one call.** `rules-gpu` at 100/s spends
+  3.2 ms from receipt to verdict: the 2 ms deadline (a batch of 64 never fills) plus ~1 ms for
+  the upload, kernels and download on WSL2. The same rules on the CPU take 0.3–0.5 ms
+  in total. At these loads the GPU buys the rules nothing; it would only pay at rates where
+  one CPU worker saturates (~14,000 real maps/s).
+- **For the CNN, small batches and short deadlines win at 1,000/s:** batch 8 / 0.5 ms gives
+  1.4 ms median and 2.4 ms p99; batch 256 / 10 ms gives 6.5 and 11.7 ms. Bigger batches only
+  pay once the load fills them before the deadline.
+- **The CNN pairs saturate near 8,000 wafers/s** (4,000–4,900 dropped at 10,000/s). A pair
+  runs the CPU rules after every CNN batch on the same worker, so part of that cost is the
+  rules; `cnn-fp16` alone at high load is not measured yet.
+- **int8 and fp16 make the same decisions here** (same accuracy and holds at 1,000/s) at a
+  slightly lower latency, consistent with docs/inference.md.
+- **The CNN is a little more accurate and finds more excursions, at a price:** 98.3% of
+  wafers right against 97.4%, and 12 of 16 excursion lots held against 11, but one of its
+  13 holds was a lot without an excursion (precision 92% against 100%). The two agree on 98%
+  of wafers.
+- **Recall stops at 59–75% for every detector.** Some excursion lots never show 3 flagged
+  wafers among 5: that is the hold rule's k and W, not the detector, and is where the
+  closed-loop result picks up.
 
 ## Reproduce
 
@@ -417,7 +464,7 @@ build/release/bench/bench-latency --workers 2 --rates 40000,80000 --seconds 2
 build/dev/tests/waferedge-tests "[detector]"         # detectors, factory, batching
 build/release/bench/bench-latency --batch 16 --deadline-us 2000   # batching the CPU rules
 # On the laptop, cuda build and FabEye's model (tools/export_cnn.py --out data):
-ctest --preset cuda -L gpu                           # includes rules-gpu == rules
+ctest --preset cuda -L gpu -R "rules-gpu|cnn-fp32"  # rules-gpu == rules, cnn-fp32 vs cnn-cpu
 build/cuda/bench/bench-latency --maps data/waferlens_demo.wmap --rates 100,1000 --detector cnn-cpu
 build/cuda/bench/bench-latency --maps data/waferlens_demo.wmap --rates 100,1000,10000 \
     --detector cnn-fp16+rules --batch 64 --deadline-us 2000
