@@ -1,4 +1,6 @@
 # pip install pre-commit && pre-commit install
+# Fuzz inputs are bytes, even when they look like text: never "fix" their whitespace.
+exclude: ^fuzz/corpus/
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0

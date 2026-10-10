@@ -141,6 +141,12 @@ the machine, and the design sketch. Read both before starting work.
   FabEye's CNN vs trivial, markdown tables (docs/evaluation.md has the full sequence).
 - **Evaluation discipline**: develop on WM-811K validation; score the test split once, at the
   end of a change, and say so if a test result prompted a change (ADR-0005 has an example).
+- `build/release/bench/bench-secs`: SECS-II decode / encode, messages/s and allocations per
+  message (the wafer report by map size, the S2F41 hold); `build/dev/tests/waferedge-alloc-tests`
+  fails on any allocation in the codec's hot path.
+- `cmake --preset fuzz && cmake --build --preset fuzz`, then
+  `build/fuzz/fuzz/fuzz-secs-item -max_total_time=60 /tmp/secs-corpus fuzz/corpus/secs_item`:
+  the SECS-II decoder under libFuzzer (docs/secs.md: merging the corpus, crash files).
 - `pre-commit run --all-files`: whitespace, YAML/JSON, clang-format 18.
 - `clang-tidy-18 -p build/clang <files>`: use the clang build's compile commands; with GCC's
   libstdc++, Clang 18 can't see `std::expected`.

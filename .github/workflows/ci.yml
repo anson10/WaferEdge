@@ -56,6 +56,30 @@ jobs:
       - run: cmake --build --preset cuda
       - run: ctest --preset cuda-cpu
 
+  fuzz:
+    # libFuzzer on the SECS-II decoder: replays the checked-in corpus, then 60 s of new inputs.
+    # Ubuntu's libFuzzer runtime comes with libclang-rt-18-dev; libc++ as in the clang job.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: >
+          sudo apt-get update && sudo apt-get install -y ninja-build libc++-18-dev
+          libc++abi-18-dev libclang-rt-18-dev
+      - run: cmake --preset fuzz
+      - run: cmake --build --preset fuzz --target fuzz-secs-item
+      - name: Fuzz the SECS-II item decoder for 60 s
+        run: |
+          mkdir -p "$RUNNER_TEMP/secs-corpus" "$RUNNER_TEMP/crashes"
+          build/fuzz/fuzz/fuzz-secs-item -max_total_time=60 \
+            -artifact_prefix="$RUNNER_TEMP/crashes/" \
+            "$RUNNER_TEMP/secs-corpus" fuzz/corpus/secs_item
+      # A crash input becomes a regression test: copy it into fuzz/corpus/secs_item.
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: ${{ runner.temp }}/crashes/
+
   format:
     runs-on: ubuntu-24.04
     steps:

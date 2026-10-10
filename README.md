@@ -35,7 +35,10 @@ a batch ([docs/gpu.md](docs/gpu.md), ADR-0007). Phase 2b (the inference engine) 
 CNN runs on WaferEdge's own GEMM ladder and implicit-GEMM convolutions on the GPU (fp32, fp16
 and int8 tensor cores), with FabEye's macro-F1 and conformal coverage in every precision,
 ~11,000 (fp16) to ~13,000 (int8) maps/s, and ~0.45 ms for a single map in int8 with the
-forward pass replayed as a CUDA Graph ([docs/inference.md](docs/inference.md)).
+forward pass replayed as a CUDA Graph ([docs/inference.md](docs/inference.md)). Phase 3 (the
+equipment protocol) has started with the SECS-II item codec: zero-copy decoding to views over
+the receive buffer, encoding into a reused buffer, 0 allocations per message, fuzzed with
+libFuzzer in CI ([docs/secs.md](docs/secs.md), ADR-0009).
 
 ## Build
 

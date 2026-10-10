@@ -15,14 +15,30 @@ add_executable(waferedge-tests
   test_hough.cpp
   test_machine.cpp
   test_map_file.cpp
+  test_fuzz_corpus.cpp
   test_randomness.cpp
+  test_secs.cpp
+  test_secs_roundtrip.cpp
   test_thread_pool.cpp)
 target_link_libraries(waferedge-tests
-  PRIVATE waferedge waferedge_synth waferedge_options Catch2::Catch2WithMain)
+  PRIVATE waferedge waferedge_synth waferedge_fuzz_targets waferedge_options
+          Catch2::Catch2WithMain)
 target_compile_definitions(waferedge-tests PRIVATE
   WAFEREDGE_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data"
   WAFEREDGE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 catch_discover_tests(waferedge-tests)
+
+# Replaces the global operator new to count allocations, hence an object library (always
+# linked in) and a binary of its own.
+add_library(waferedge_alloc_counter OBJECT support/alloc_counter.cpp)
+target_include_directories(waferedge_alloc_counter PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(waferedge_alloc_counter PRIVATE waferedge_options)
+
+add_executable(waferedge-alloc-tests test_secs_alloc.cpp)
+target_link_libraries(waferedge-alloc-tests
+  PRIVATE waferedge waferedge_synth waferedge_alloc_counter waferedge_options
+          Catch2::Catch2WithMain)
+catch_discover_tests(waferedge-alloc-tests)
 
 # GPU tests run locally only (CI has no GPU); `ctest -L gpu` selects them.
 if(WAFEREDGE_CUDA)
