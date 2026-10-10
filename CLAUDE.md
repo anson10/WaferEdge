@@ -148,6 +148,10 @@ the machine, and the design sketch. Read both before starting work.
   over TCP loopback (p50 / p99 / p99.9, allocations per transaction);
   `build/dev/tests/waferedge-tests "[hsms]"` / `"[gem]"`: the fake-clock and TCP tests of
   HSMS and GEM; `BM_gem_cycle` in bench-hsms: one report-and-hold cycle in memory.
+- `build/release/tools/tool-emulator <file.wmap> --port 5000 --rate 50`: the tool emulator
+  (passive HSMS, GEM equipment; docs/pipeline.md); `tools/secsgem_host.py` drives it from
+  secsgem as an independent host; `build/release/bench/bench-emulator`: its achieved rate and
+  lateness per target rate.
 - `cmake --preset fuzz && cmake --build --preset fuzz`, then
   `build/fuzz/fuzz/fuzz-secs-item -max_total_time=60 /tmp/secs-corpus fuzz/corpus/secs_item`
   (or `fuzz-hsms-frames`, `fuzz-gem-messages` with their corpora): the SECS-II decoder,

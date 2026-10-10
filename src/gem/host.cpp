@@ -125,7 +125,7 @@ GemResult<std::uint32_t> Host::command(Link& link, const LotCommand& command) {
     encode_lot_command(e, command);
     auto system = link.send(2, 41, true, body(e));
     if (!system) {
-        return std::unexpected(GemError::link);
+        return std::unexpected(gem_error(system.error()));
     }
     return *system;
 }
@@ -136,7 +136,7 @@ GemResult<std::uint32_t> Host::send_empty(Link& link, std::uint8_t stream, std::
     }
     auto system = link.send(stream, function, true, {});
     if (!system) {
-        return std::unexpected(GemError::link);
+        return std::unexpected(gem_error(system.error()));
     }
     return *system;
 }

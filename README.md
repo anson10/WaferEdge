@@ -41,7 +41,9 @@ receive buffer, encoding into a reused buffer), the HSMS transport (a state mach
 a fake clock, driven over TCP by Asio coroutines, ~7 µs per loopback transaction) and a GEM
 subset (communication and control state machines, the wafer report, the lot hold), with 0
 allocations per message and all three layers fuzzed with libFuzzer in CI
-([docs/secs.md](docs/secs.md), ADR-0009 to ADR-0011). Phase 4 puts the pipeline together.
+([docs/secs.md](docs/secs.md), ADR-0009 to ADR-0011). Phase 4 (the closed loop) has started:
+the tool emulator replays wafer maps over HSMS on an open-loop constant-rate schedule and
+honours lot holds ([docs/pipeline.md](docs/pipeline.md), ADR-0012).
 
 ## Build
 
