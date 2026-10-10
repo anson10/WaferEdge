@@ -19,6 +19,7 @@ add_library(waferedge
   map_file.cpp
   randomness.cpp
   pipeline/analyzer.cpp
+  pipeline/closed_loop.cpp
   pipeline/decision.cpp
   pipeline/detector.cpp
   pipeline/edge_core.cpp

@@ -8,6 +8,7 @@ target_link_libraries(waferedge_synth PUBLIC waferedge PRIVATE waferedge_options
 add_executable(waferedge-tests
   test_backends.cpp
   test_classifier.cpp
+  test_closed_loop.cpp
   test_clusters.cpp
   test_cnn.cpp
   test_detector.cpp

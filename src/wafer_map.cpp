@@ -28,6 +28,16 @@ std::string_view pattern_name(Pattern p) noexcept {
     return "unknown";
 }
 
+std::optional<Pattern> pattern_from_name(std::string_view name) noexcept {
+    for (std::size_t i = 0; i < kPatternCount; ++i) {
+        const auto p = static_cast<Pattern>(i);
+        if (pattern_name(p) == name) {
+            return p;
+        }
+    }
+    return std::nullopt;
+}
+
 std::string_view split_name(Split s) noexcept {
     switch (s) {
     case Split::train:

@@ -10,6 +10,10 @@ truth from wafer_pattern_truth + excursions_ground_truth (wafers not listed: non
 names become integer ids in sorted order, wafer_id is the row index, tested_at is unknown (0).
 
 --per-pattern N keeps the first N wafers of each truth class (a small fixture for tests).
+--excursions FILE (WaferLens only) also writes the spatial excursions and which wafer shows
+which, for the closed-loop evaluation (docs/pipeline.md):
+    excursion,<id>,<pattern>,<start_us>,<end_us>     one per spatial-pattern excursion
+    wafer,<wafer_id>,<excursion_id>                  one per wafer showing a pattern
 Needs numpy and pyarrow; the sources are only read, never modified.
 """
 
@@ -77,6 +81,29 @@ def from_waferlens(data_dir):
     return wafer_ids, lots, tested, truths, [UNSPLIT] * len(maps), maps
 
 
+def write_excursions(data_dir, path):
+    """The spatial excursions (id, pattern, start and end in us since the epoch) and the
+    excursion each patterned wafer shows, from WaferLens's ground-truth tables."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    exc = pq.read_table(data_dir / "excursions_ground_truth.parquet")
+    exc = exc.filter(pc.equal(exc.column("excursion_type"), "spatial_pattern"))
+    to_us = lambda col: exc.column(col).cast(pa.timestamp("us")).cast("int64").to_pylist()
+    ids = exc.column("excursion_id").to_pylist()
+    patterns = exc.column("spatial_pattern").to_pylist()
+    starts, ends = to_us("start_time"), to_us("end_time")
+    truth = pq.read_table(data_dir / "wafer_pattern_truth.parquet").to_pydict()
+    with open(path, "w") as f:
+        f.write("# kind,id,...: excursion,id,pattern,start_us,end_us | wafer,wafer_id,excursion_id\n")
+        for i, p, a, b in sorted(zip(ids, patterns, starts, ends)):
+            f.write(f"excursion,{i},{p},{a},{b}\n")
+        for w, e in sorted(zip(truth["wafer_id"], truth["excursion_id"])):
+            f.write(f"wafer,{w},{e}\n")
+    print(f"{path}: {len(ids)} spatial excursions, {len(truth['wafer_id'])} patterned wafers")
+
+
 def from_wm811k(pkl):
     with open(pkl, "rb") as f:
         d = pickle.load(f)
@@ -96,7 +123,11 @@ def main():
     ap.add_argument("output", type=Path)
     ap.add_argument("--per-pattern", type=int, default=0, metavar="N",
                     help="keep only the first N wafers of each truth class")
+    ap.add_argument("--excursions", type=Path, metavar="FILE",
+                    help="WaferLens: also write the spatial excursions and their wafers (CSV)")
     args = ap.parse_args()
+    if args.excursions and args.source != "waferlens":
+        ap.error("--excursions needs the waferlens source")
 
     load = from_waferlens if args.source == "waferlens" else from_wm811k
     cols = load(args.input.expanduser())
@@ -112,6 +143,8 @@ def main():
     counts = np.bincount(np.array(cols[3]), minlength=len(PATTERNS))
     print(f"{args.output}: {len(cols[5])} maps, {bin_bytes} dies")
     print("  " + ", ".join(f"{p} {c}" for p, c in zip(PATTERNS, counts) if c))
+    if args.excursions:
+        write_excursions(args.input.expanduser(), args.excursions)
 
 
 if __name__ == "__main__":

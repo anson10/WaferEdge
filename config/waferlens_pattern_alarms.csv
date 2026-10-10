@@ -1,0 +1,19 @@
+# WaferLens v2.0.0 batch pattern alarm, per spatial excursion: docs/root_cause.md, "Detection:
+# the pattern alarm vs SPC" (dbt model fct_pattern_detection). Hours after the excursion
+# started until its first patterned wafer reached sort, and until the alarm fired (an alarm
+# for the same pattern, so another excursion's wafers can raise it: id 22 alarmed at 0 h).
+# Copied, not computed here: WaferEdge compares its holds against these published numbers.
+excursion_id,pattern,pattern_wafers,first_sorted_h,alarm_h
+6,random,119,21,50
+12,random,196,38,63
+13,edge_loc,294,34,39
+14,scratch,63,51,61
+18,edge_ring,65,45,52
+19,edge_loc,175,47,49
+22,edge_loc,165,29,0
+24,center,132,72,74
+27,donut,141,53,56
+28,center,83,91,94
+31,loc,133,34,35
+32,edge_ring,99,48,64
+36,donut,226,41,43

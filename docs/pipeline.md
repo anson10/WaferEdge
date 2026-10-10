@@ -9,7 +9,8 @@ ADR-0012), the **SPSC ring** the edge host's threads hand wafers over with
 (`include/waferedge/pipeline/`, `src/pipeline/`, `tools/edge_host.cpp`; ADR-0014), and the
 **latency** from sort result to hold (`bench/bench_latency.cpp`; ADR-0015), and the
 **experiments** with detectors and batching (`include/waferedge/pipeline/detector.hpp`;
-ADR-0016).
+ADR-0016), and the **closed-loop result** on WaferLens's excursions (`tools/closed_loop.cpp`;
+ADR-0017).
 
 ```
  tool-emulator (passive HSMS, GEM equipment)          waferedge-edge (active HSMS, GEM host)
@@ -447,6 +448,32 @@ What they say:
   wafers among 5: that is the hold rule's k and W, not the detector, and is where the
   closed-loop result picks up.
 
+## The closed-loop result
+
+What would WaferEdge's holds have done to WaferLens's 13 spatial excursions? WaferLens's
+batch pattern alarm caught all 13, a median 52 h after each excursion began. About 45 h of
+that is sort lag: a patterned wafer only reaches sort after the whole route. Its alarm then
+followed the first patterned wafer at sort by a median 3 h. WaferEdge also sits at sort, so
+it can only shorten that second part.
+
+`waferedge-closedloop` replays the demo set in sort-time order through the edge host's own
+detector and decision rule (ADR-0017). A hold lands at its triggering wafer's sort time plus
+the measured latency, and the held lot's later wafers are withheld. A real run would take
+weeks; the replay gives the same result as long as a hold lands before the lot's next wafer
+(the tool prints the smallest gap). A test runs the sample both live over TCP and replayed,
+and requires the same holds and withheld wafers.
+
+Per excursion it reports, in hours after the excursion began:
+- its first patterned wafer at sort, next to WaferLens's figure (a check of the data);
+- WaferEdge's first hold;
+- WaferLens's alarm.
+
+Then the patterned wafers sorted before each, against all of them with no hold.
+`--sweep` reruns the hold rule for several k of W on the same verdicts.
+
+The results need the demo set and its ground truth from WaferLens (the laptop); they come
+from the commands under Reproduce.
+
 ## Reproduce
 
 ```sh
@@ -463,6 +490,11 @@ build/release/bench/bench-latency                    # sort -> decision / HOLD b
 build/release/bench/bench-latency --workers 2 --rates 40000,80000 --seconds 2
 build/dev/tests/waferedge-tests "[detector]"         # detectors, factory, batching
 build/release/bench/bench-latency --batch 16 --deadline-us 2000   # batching the CPU rules
+build/dev/tests/waferedge-tests "[closedloop]"       # replay == live loop on the sample
+python3 tools/export_maps.py waferlens ~/waferLens/data/demo data/waferlens_demo.wmap \
+    --excursions data/waferlens_excursions.csv
+build/release/tools/waferedge-closedloop data/waferlens_demo.wmap \
+    --excursions data/waferlens_excursions.csv --sweep
 # On the laptop, cuda build and FabEye's model (tools/export_cnn.py --out data):
 ctest --preset cuda -L gpu -R "rules-gpu|cnn-fp32"  # rules-gpu == rules, cnn-fp32 vs cnn-cpu
 build/cuda/bench/bench-latency --maps data/waferlens_demo.wmap --rates 100,1000 --detector cnn-cpu

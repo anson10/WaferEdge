@@ -227,6 +227,8 @@ Putting it together, closed loop, with honest tail latency.
       97.4%, holds 12 vs 11 of 16 excursion lots, one wrong hold)
 - [ ] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,
       against WaferLens's batch pattern alarm (median 52 h, mostly sort lag) and against no hold
+      (in progress: `waferedge-closedloop`, a sort-time replay of the live rule, ADR-0017;
+      results to measure on the laptop's demo set)
 - [ ] `docs/pipeline.md` and an ADR (threading and queue design)
       (docs/pipeline.md: the emulator, the ring, the edge host; ADR-0013 ring, ADR-0014 threads)
 

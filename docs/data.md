@@ -19,6 +19,10 @@ python3 tools/export_maps.py wm811k ~/FabEye/data/wm811k/processed_lot.pkl data/
 build/release/tools/waferedge-maps data/waferlens_demo.wmap
 ```
 
+`--excursions FILE` (WaferLens only) also writes the spatial excursions (id, pattern, start
+and end) and which excursion each patterned wafer shows, for the closed-loop result
+(docs/pipeline.md).
+
 The `dev` (1,000 wafers) and `stress` (125,000) WaferLens profiles export the same way from
 `~/waferLens/data/dev` and `~/waferLens/data/stress`.
 
