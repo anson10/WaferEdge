@@ -195,8 +195,9 @@ Putting it together, closed loop, with honest tail latency.
       200,000 wafers/s, lateness p50 20–120 µs; interoperates with secsgem's GEM host)
 - [ ] **Edge host**: network thread → **lock-free SPSC ring** → analytics thread(s) → decision
       thread → S2F41 back; cache-line aligned slots, no false sharing, optional thread pinning
-- [ ] Lock-free queue tests: TSan, a stress test with a checker, a benchmark against a mutex
-      queue
+- [x] Lock-free queue tests: TSan, a stress test with a checker, a benchmark against a mutex
+      queue (`pipeline::SpscRing`, ADR-0013: 7x the mutex queue's throughput, round trip
+      0.74 vs 27 µs; TSan catches a deliberately relaxed release store)
 - [ ] **Allocation-free hot path**: `std::pmr` / arena buffers; a test that fails on any
       allocation per message
 - [ ] Decision rule: hold the lot after k wafers with the same signature within a window

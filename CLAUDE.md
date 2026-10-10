@@ -152,6 +152,8 @@ the machine, and the design sketch. Read both before starting work.
   (passive HSMS, GEM equipment; docs/pipeline.md); `tools/secsgem_host.py` drives it from
   secsgem as an independent host; `build/release/bench/bench-emulator`: its achieved rate and
   lateness per target rate.
+- `build/release/bench/bench-ring`: the SPSC ring vs a mutex queue (throughput, median of 3;
+  ping-pong round trip); `build/dev/tests/waferedge-tests "[ring]"`, and under the `tsan` preset.
 - `cmake --preset fuzz && cmake --build --preset fuzz`, then
   `build/fuzz/fuzz/fuzz-secs-item -max_total_time=60 /tmp/secs-corpus fuzz/corpus/secs_item`
   (or `fuzz-hsms-frames`, `fuzz-gem-messages` with their corpora): the SECS-II decoder,

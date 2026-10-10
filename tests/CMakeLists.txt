@@ -24,6 +24,7 @@ add_executable(waferedge-tests
   test_randomness.cpp
   test_replay.cpp
   test_secs.cpp
+  test_spsc_ring.cpp
   test_secs_roundtrip.cpp
   test_thread_pool.cpp
   test_tool_emulator.cpp)
