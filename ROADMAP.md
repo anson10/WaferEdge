@@ -193,15 +193,22 @@ Putting it together, closed loop, with honest tail latency.
       as S6F11 events at a configurable rate, honours S2F41 HOLD (stops sending that lot)
       (open-loop constant-rate schedule, ADR-0012; holds counted as withheld wafers; holds
       200,000 wafers/s, lateness p50 20–120 µs; interoperates with secsgem's GEM host)
-- [ ] **Edge host**: network thread → **lock-free SPSC ring** → analytics thread(s) → decision
+- [x] **Edge host**: network thread → **lock-free SPSC ring** → analytics thread(s) → decision
       thread → S2F41 back; cache-line aligned slots, no false sharing, optional thread pinning
+      (`pipeline::EdgeHost`, ADR-0014: the decision runs on the network thread, where every
+      worker's verdicts meet, not on a thread of its own; workers spin, then sleep on a futex
+      doorbell; verdicts wake the network thread through an eventfd; `waferedge-edge`)
 - [x] Lock-free queue tests: TSan, a stress test with a checker, a benchmark against a mutex
       queue (`pipeline::SpscRing`, ADR-0013: 7x the mutex queue's throughput, round trip
       0.74 vs 27 µs; TSan catches a deliberately relaxed release store)
-- [ ] **Allocation-free hot path**: `std::pmr` / arena buffers; a test that fails on any
+- [x] **Allocation-free hot path**: `std::pmr` / arena buffers; a test that fails on any
       allocation per message
-- [ ] Decision rule: hold the lot after k wafers with the same signature within a window
+      (fixed-size ring slots and tables sized at start-up instead of `std::pmr`:
+      `waferedge-alloc-tests "[edge]"`, report → classify → decide → HOLD → HCACK, 0 allocations)
+- [x] Decision rule: hold the lot after k wafers with the same signature within a window
       (k configurable); also raise S5F1 alarms
+      (k of the lot's last W verdicts, default 3 of 5, `--k` / `--window`. S5F1 goes from the
+      equipment to the host, so the host can't raise one at the tool; ADR-0014)
 - [ ] **Latency measurement**: per wafer, from the emulator's send timestamp to the HOLD being
       received, on a steady clock; HDR-style histogram; constant-rate load so coordinated
       omission is accounted for; p50 / p99 / p99.9 / max
@@ -210,7 +217,7 @@ Putting it together, closed loop, with honest tail latency.
 - [ ] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,
       against WaferLens's batch pattern alarm (median 52 h, mostly sort lag) and against no hold
 - [ ] `docs/pipeline.md` and an ADR (threading and queue design)
-      (docs/pipeline.md started: the emulator)
+      (docs/pipeline.md: the emulator, the ring, the edge host; ADR-0013 ring, ADR-0014 threads)
 
 ## Phase 5 — Python bindings and launch (2–3 days)
 
