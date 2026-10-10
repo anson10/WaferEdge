@@ -54,6 +54,8 @@ public:
     void stop();
 
     [[nodiscard]] const EdgeCore& core() const noexcept { return core_; }
+    // EdgeCore::set_observer; set before run().
+    void set_observer(VerdictObserver observer) { core_.set_observer(std::move(observer)); }
     [[nodiscard]] std::span<const std::unique_ptr<Analyzer>> analyzers() const noexcept {
         return analyzers_;
     }

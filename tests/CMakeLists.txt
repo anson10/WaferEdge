@@ -17,6 +17,7 @@ add_executable(waferedge-tests
   test_gem_messages.cpp
   test_gem_session.cpp
   test_geometry.cpp
+  test_histogram.cpp
   test_hough.cpp
   test_hsms_protocol.cpp
   test_hsms_session.cpp

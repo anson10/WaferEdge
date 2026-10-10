@@ -155,6 +155,8 @@ the machine, and the design sketch. Read both before starting work.
 - `build/release/tools/waferedge-edge --port 5000 --k 3 --window 5 --workers 1`: the edge host
   (active HSMS, GEM host, analytics threads, hold rule; docs/pipeline.md);
   `build/dev/tests/waferedge-tests "[edge]"` and `waferedge-alloc-tests "[edge]"`.
+- `build/release/bench/bench-latency [--maps FILE] [--rates ...] [--workers N]`: sort result
+  → decision and → HOLD at the tool, by load, from the emulator's schedule (ADR-0015).
 - `build/release/bench/bench-ring`: the SPSC ring vs a mutex queue (throughput, median of 3;
   ping-pong round trip); `build/dev/tests/waferedge-tests "[ring]"`, and under the `tsan` preset.
 - `cmake --preset fuzz && cmake --build --preset fuzz`, then

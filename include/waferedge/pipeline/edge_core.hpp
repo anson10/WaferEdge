@@ -25,6 +25,9 @@
 namespace waferedge::pipeline {
 
 using Logger = std::function<void(std::string_view)>;
+// Called on the network thread for every verdict, with the time it was decided on: how the
+// latency benchmark sees each wafer without the core keeping a per-wafer log.
+using VerdictObserver = std::function<void(const Verdict&, TimePoint decided)>;
 
 struct EdgeConfig {
     gem::HostConfig gem{};
@@ -76,6 +79,9 @@ public:
 
     // An HSMS event for the GEM host; wafer reports are submitted to the analyzers.
     void on_hsms(const hsms::Event& event, gem::Link& link, TimePoint now);
+    // Sees every verdict from now on (the latency benchmark); empty: none.
+    void set_observer(VerdictObserver observer) { observer_ = std::move(observer); }
+
     // GEM's timers (WAIT DELAY).
     void tick(gem::Link& link, TimePoint now);
     [[nodiscard]] std::optional<TimePoint> next_deadline() const noexcept {
@@ -113,6 +119,7 @@ private:
     bool communicated_ = false;
     bool tool_left_ = false;
     Logger log_;
+    VerdictObserver observer_;
 };
 
 } // namespace waferedge::pipeline

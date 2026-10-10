@@ -94,9 +94,14 @@ void Tool::on_gem(const gem::Event& event) {
         log("malformed message from the host (S9F7 sent)");
     }
     if (config_.stop_when_done && replay_.finished() && !blocked_ &&
-        acknowledged_ + failed_ >= replay_.stats().sent && !stopped_) {
+        acknowledged_ + failed_ >= replay_.stats().sent && !stopped_ && !done_at_) {
         log("every wafer reported and answered");
-        stop();
+        if (config_.linger <= hsms::Duration::zero()) {
+            stop();
+        } else {
+            done_at_ = now; // the pacer stops the tool when the linger is over
+            wake_.cancel();
+        }
     }
 }
 
@@ -140,9 +145,16 @@ asio::awaitable<void> Tool::pacer() {
             gem_deadline && (!next || *gem_deadline < *next)) {
             next = gem_deadline;
         }
+        if (done_at_ && (!next || *done_at_ + config_.linger < *next)) {
+            next = *done_at_ + config_.linger;
+        }
         wake_.expires_at(next ? *next : asio::steady_timer::time_point::max());
         co_await wake_.async_wait(token());
         if (stopped_) {
+            break;
+        }
+        if (done_at_ && hsms::Clock::now() >= *done_at_ + config_.linger) {
+            stop();
             break;
         }
         equipment_.tick(link_, hsms::Clock::now());
