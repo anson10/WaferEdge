@@ -5,6 +5,7 @@
 
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
+#include <asio/steady_timer.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -83,4 +84,63 @@ TEST_CASE("the emulator replays the sample and honours a HOLD", "[emulator][net]
     CHECK(std::ranges::count(after_hold, target) == 0);
     CHECK(tool.replay().hold_time(target).has_value());
     CHECK(std::ranges::find(tool_log, "HOLD LOT-000281: HCACK 0") != tool_log.end());
+}
+
+TEST_CASE("linger: a HOLD sent after the last report still reaches the tool", "[emulator][net]") {
+    auto set = MapSet::load(WAFEREDGE_TEST_DATA "/waferlens_sample.wmap");
+    REQUIRE(set.has_value());
+    asio::io_context io;
+    asio::ip::tcp::acceptor acceptor(io, {asio::ip::address_v4::loopback(), 0});
+
+    emulator::ToolConfig config;
+    config.replay.rate = 2000;
+    config.linger = 500ms;
+    emulator::Tool tool(io.get_executor(), set->records(), config);
+
+    // The host holds the last wafer's lot 20 ms after that wafer arrives, long after its
+    // S6F12 went back: only a lingering tool is still there to answer.
+    gem::Host host;
+    std::size_t received = 0;
+    std::string last_lot;
+    std::optional<gem::Hcack> answer;
+    std::optional<hsms::Session> session;
+    std::optional<gem::SessionLink> link;
+    asio::steady_timer delay(io);
+    hsms::Config active;
+    active.role = hsms::Role::active;
+    session.emplace(io.get_executor(), active, [&](hsms::Session& s, const hsms::Event& e) {
+        host.on_hsms(e, *link, hsms::Clock::now());
+        while (auto g = host.poll()) {
+            if (const auto* w = std::get_if<gem::WaferReported>(&*g)) {
+                last_lot = std::string(w->report.lot);
+                if (++received == set->size()) {
+                    delay.expires_after(20ms);
+                    delay.async_wait([&](const asio::error_code&) {
+                        REQUIRE(host.command(*link, {gem::LotAction::hold, last_lot}));
+                    });
+                }
+            } else if (const auto* r = std::get_if<gem::ReplyReceived>(&*g);
+                       r != nullptr && r->function == 42) {
+                answer = static_cast<gem::Hcack>(r->code);
+            } else if (std::holds_alternative<gem::NotCommunicating>(*g)) {
+                s.stop();
+            }
+        }
+    });
+    link.emplace(*session);
+
+    const auto rethrow = [](const std::exception_ptr& e) {
+        if (e) {
+            std::rethrow_exception(e);
+        }
+    };
+    asio::co_spawn(io, tool.run(acceptor), rethrow);
+    asio::co_spawn(io, session->run_active(acceptor.local_endpoint()), rethrow);
+    io.run_for(20s);
+
+    CHECK(io.stopped());
+    CHECK(received == set->size());
+    CHECK(tool.replay().stats().holds == 1);
+    REQUIRE(answer.has_value());
+    CHECK(*answer == gem::Hcack::done);
 }

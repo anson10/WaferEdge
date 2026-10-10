@@ -5,8 +5,9 @@ them over HSMS / SECS-II, the edge host finds spatial signatures and holds the l
 time from sort to hold is measured. This page grows with the phase; so far it covers the
 **tool emulator** (`include/waferedge/emulator/`, `src/emulator/`, `tools/tool_emulator.cpp`;
 ADR-0012), the **SPSC ring** the edge host's threads hand wafers over with
-(`include/waferedge/pipeline/spsc_ring.hpp`; ADR-0013), and the **edge host** itself
-(`include/waferedge/pipeline/`, `src/pipeline/`, `tools/edge_host.cpp`; ADR-0014).
+(`include/waferedge/pipeline/spsc_ring.hpp`; ADR-0013), the **edge host** itself
+(`include/waferedge/pipeline/`, `src/pipeline/`, `tools/edge_host.cpp`; ADR-0014), and the
+**latency** from sort result to hold (`bench/bench_latency.cpp`; ADR-0015).
 
 ```
  tool-emulator (passive HSMS, GEM equipment)          waferedge-edge (active HSMS, GEM host)
@@ -25,8 +26,8 @@ cols, bins; docs/secs.md) per slot of a constant-rate schedule.
   (no such lot).
 - A held lot's remaining wafers are skipped and counted as **withheld**: the wafers a real
   tool would not have processed, which is the payoff the closed loop is measured by.
-- It stops once every wafer is reported and answered (S6F12, or a failed transaction), or on
-  Ctrl-C.
+- It stops once every wafer is reported and answered (S6F12, or a failed transaction) and a
+  linger has passed (`--linger`, 1 s by default; see the edge host below), or on Ctrl-C.
 
 Lots are named from the `.wmap` lot ids, `LOT-000281`. The logic is split as in HSMS and GEM:
 `emulator::Replay` holds the schedule, the holds and the per-wafer log without any I/O and
@@ -228,8 +229,9 @@ The closed-loop test found two ordering bugs, both fixed:
   the drain. Stamps are now read when each step happens.
 - **The end of a replay.** The host acknowledges a report before analysing it. The emulator
   stops once every S6F12 is in, so it can leave before the last lot's HOLD arrives. A real
-  tool keeps running. The test stops the emulator only once the edge host has settled; the
-  command-line tools show the effect as one hold "decided" but not "answered".
+  tool keeps running. The test stops the emulator only once the edge host has settled, and
+  the emulator now lingers after its last answer (`ToolConfig::linger`, `--linger`, 1 s by
+  default) so the last lots' HOLDs still land.
 
 ### Run it
 
@@ -239,9 +241,9 @@ build/release/tools/waferedge-edge --port 5000 --k 1 --window 1 --workers 2
 ```
 
 On the sample (24 wafers, three per WaferLens class) with k = 1, the edge host holds 11 lots
-and the emulator withholds 10 wafers. The 11th hold is the end-of-replay effect above. The
-edge host prints the median time of each stage for the answered holds (received → analysed →
-decided → S2F41 sent → S2F42). These are only 10 samples, at 20 wafers/s, where every wafer
+and the emulator withholds 10 wafers; all 11 holds are answered (the 11th lot had no wafers
+left to withhold). The edge host prints the median time of each stage for the answered holds (received → analysed →
+decided → S2F41 sent → S2F42). These are only ~10 samples, at 20 wafers/s, where every wafer
 finds the threads asleep, so wake-ups dominate. In the cloud container, received → analysed
 (waking the worker and classifying a 40 × 40 map) took ~0.2–0.3 ms with the worker asleep,
 and ~0.13 ms with the worker spinning through the 50 ms gap (`--spin-us 100000`). Phase 4's
@@ -249,6 +251,114 @@ latency item measures this properly, with histograms from the tool's schedule. T
 showed the same picture: received → analysed 232 µs, → decided 91 µs, → S2F41 sent 3 µs,
 → S2F42 419 µs (medians of 10 holds, 2 workers, default spin).
 `--cpus NET,W1,...` pins the network thread and the workers.
+
+## Latency: sort result to hold
+
+`build/release/bench/bench-latency` runs the tool emulator and the edge host in one process:
+the emulator on one thread, the edge host's network thread on another, the workers on their
+own. All of them read the same steady clock, and the two sides talk HSMS over TCP on
+127.0.0.1 (ADR-0015). Latency is measured from each wafer's **scheduled** time in the
+emulator's open-loop schedule, so a stall anywhere shows in the wafers queued behind it.
+Percentiles come from `pipeline::LatencyHistogram`: log-linear buckets, never below the true
+value and at most 1/128 above it.
+
+- **Decision**: scheduled sort time → the network thread has the wafer's verdict, i.e. the
+  moment a HOLD would go out. Every analysed wafer gives a sample.
+- **HOLD**: for each lot held, the scheduled time of the wafer that completed the rule → the
+  tool receiving the S2F41.
+- **Dropped**: wafers that found every ring full. They have no verdict and so no latency;
+  they are counted, never hidden.
+
+Synthetic 40 × 40 maps (lots of 25; every tenth lot gets a centre blob from its 6th wafer,
+held after 3 of 5), at least 3 s and 2,000 wafers per rate, default worker spin (50 µs).
+**4-thread cloud container, not the laptop**:
+
+| Wafers/s | Workers | Dropped | Decision p50 | p99 | p99.9 | max | HOLD p50 | HOLD max |
+|---|---|---|---|---|---|---|---|---|
+| 100 | 1 | 0 | 582 µs | 3.4 ms | 15.1 ms | 25.0 ms | 721 µs | 2.8 ms |
+| 1,000 | 1 | 0 | 387 µs | 23.7 ms | 36.4 ms | 38.2 ms | 475 µs | 1.5 ms |
+| 5,000 | 1 | 0 | 107 µs | 39.8 ms | 51.9 ms | 54.1 ms | 157 µs | 54.4 ms |
+| 10,000 | 1 | 0 | 108 µs | 2.3 ms | 4.8 ms | 5.8 ms | 156 µs | 4.1 ms |
+| 20,000 | 1 | 0 | 190 µs | 9.0 ms | 12.2 ms | 13.3 ms | 276 µs | 12.2 ms |
+| 40,000 | 1 | 15,755 of 80,000 | 8.0 ms | 10.4 ms | 13.0 ms | 15.6 ms | 8.0 ms | 15.8 ms |
+| 40,000 | 2 | 0 | 119 µs | 2.2 ms | 4.0 ms | 4.8 ms | 176 µs | 2.9 ms |
+| 80,000 | 2 | 30,145 of 160,000 | 7.7 ms | 12.8 ms | 21.6 ms | 22.1 ms | 7.6 ms | 15.3 ms |
+
+Where the time goes (p50 / p99):
+
+| Wafers/s | Workers | Emulator late | Scheduled → received | Received → analysed | Analysed → decided |
+|---|---|---|---|---|---|
+| 100 | 1 | 138 µs / 1.4 ms | 324 µs / 2.6 ms | 177 µs / 721 µs | 60 µs / 264 µs |
+| 100, spinning workers | 1 | 154 µs / 2.8 ms | 356 µs / 5.5 ms | 32 µs / 208 µs | 30 µs / 226 µs |
+| 10,000 | 1 | 23 µs / 161 µs | 55 µs / 602 µs | 37 µs / 1.6 ms | 15 µs / 51 µs |
+| 40,000 | 1 | 25 µs / 217 µs | 70 µs / 741 µs | 7.9 ms / 10.0 ms | 15 µs / 259 µs |
+
+What the numbers say:
+- **At low rates, waking threads is the cost.** At 100 wafers/s every thread sleeps between
+  wafers. With the worker asleep, received → analysed is 177 µs. With the worker spinning
+  through the 10 ms gaps (`--spin-us 20000`) it is 32 µs, about what classifying the map
+  costs. The ~145 µs difference is the wake-up. The rest of the median is the emulator and
+  the network thread waking from epoll. Busy rates are *faster* at the median (~0.1 ms at
+  5,000–10,000 wafers/s) because nothing has time to fall asleep.
+- **Overload turns into drops, not an unbounded queue.** One worker classifies ~32,000 of
+  these maps per second. At 40,000/s its ring fills: 20% of the wafers are dropped, and the
+  others wait at most a full ring, 256 wafers × ~31 µs ≈ 8 ms (Little's law). That is where
+  the median jumps to. A second worker doubles the capacity (40,000/s with no drops; drops
+  again at 80,000/s). Dropped wafers are the price of keeping the network thread and the
+  tool's transactions on time (ADR-0014); the next step is to size workers so a real tool
+  never gets near this.
+- **The tails here are the container's.** The p99 of 24–40 ms at 1,000–5,000/s follows the
+  emulator's own lateness (p99 up to 15 ms): four virtual CPUs shared by the emulator, the
+  network thread, a spinning worker and the OS. The same rows on the laptop, with 12
+  hardware threads, are the numbers to quote.
+- **A late hold can still be too late for its lot.** At 40,000 wafers/s a lot of 25 takes
+  0.6 ms to sort, less than the HOLD's latency, so the hold reaches the tool after the lot is
+  done and withholds nothing. A real tool sorts a wafer every minute or so, which leaves
+  four to five orders of magnitude of slack. The closed-loop result will count withheld wafers
+  at realistic rates.
+
+On real maps, `--maps data/waferlens_demo.wmap` replays the WaferLens demo set (24,090
+wafers, exported as in docs/data.md) instead of the synthetic ones.
+
+### On the laptop
+
+Ryzen 5 7535HS (6 cores / 12 threads), WSL2, release build, threads not pinned, same
+commands:
+
+| Maps | Wafers/s | Workers | Dropped | Decision p50 | p99 | p99.9 | HOLD p50 | Emulator late p99 |
+|---|---|---|---|---|---|---|---|---|
+| synthetic | 100 | 1 | 0 | 532 µs | **1.13 s** | 1.30 s | 717 µs | **1.12 s** |
+| synthetic | 1,000 | 1 | 0 | 338 µs | 680 µs | 1.4 ms | 487 µs | 188 µs |
+| synthetic | 5,000 | 1 | 0 | 258 µs | 2.3 ms | 10.7 ms | 379 µs | 226 µs |
+| synthetic | 10,000 | 1 | **12,866** | 299 µs | **1.48 s** | 1.48 s | 4.1 ms | **1.46 s** |
+| synthetic | 20,000 | 1 | 580 | 6.5 ms | 16.6 ms | 18.1 ms | 6.5 ms | 510 µs |
+| synthetic | 40,000 | 2 | 4,045 | 11.0 ms | 20.8 ms | 21.5 ms | 10.3 ms | 324 µs |
+| synthetic | 80,000 | 2 | 85,626 | 13.2 ms | 20.6 ms | 22.7 ms | 12.5 ms | 1.5 ms |
+| WaferLens demo | 100 | 1 | 0 | 528 µs | 1.1 ms | 3.6 ms | (no hold) | 356 µs |
+| WaferLens demo | 1,000 | 1 | 0 | 375 µs | 827 µs | 4.1 ms | 639 µs | 240 µs |
+| WaferLens demo | 10,000 | 1 | 0 | 309 µs | 15.2 ms | 16.1 ms | 532 µs | 208 µs |
+
+- **Two runs hit a stall of over a second, in the whole process.** In the bold rows the
+  emulator's *own* lateness has the same p99 as the total, and the HSMS window filled up
+  (64 reports unanswered; "window full" 9 and 4,383 times). The tool thread and the edge
+  host's network thread stopped together for 1.1–1.5 s, which points at the process or the
+  WSL2 VM being paused, not at the pipeline. At 10,000/s the open-loop schedule shows what
+  follows: ~14,000 overdue wafers go out at once, flood the rings, and 12,866 are dropped.
+  A closed-loop benchmark would have hidden the stall. It didn't come back: six more runs at
+  100 and 10,000/s had p99 of 0.9–9.8 ms, and `bench-emulator` alone was clean up to
+  50,000/s. So it was a rare pause of the process or the VM (WSL2, Windows), not something
+  the pipeline does. That is also why each benchmark row is worth repeating before quoting.
+- **Without the stalls the laptop is steadier than the container:** p99 of 0.7–2.3 ms at
+  1,000–5,000/s against 24–40 ms there, because the emulator's lateness stays below
+  0.25 ms at p99.
+- **Its worker saturates sooner:** about 20,000 synthetic maps/s for one worker (container:
+  ~32,000), and two workers already drop at 40,000/s. Not because of core sharing: pinned to
+  separate cores (`--cpus 0,2,4`), one worker still dropped 2,289 wafers at 20,000/s. It is
+  the laptop's per-core speed at this work: signals + rules ran at ~14,000 real WaferLens
+  maps/s on one core (docs/evaluation.md), the Hough transform the largest part.
+- **Real WaferLens maps** hold 10,000 wafers/s on one worker without drops; the p99 of 15 ms
+  is the ring backing up near the worker's capacity. At 100/s the first 2,000 wafers in
+  `tested_at` order contain no excursion that trips 3 of 5, so no hold.
 
 ## Reproduce
 
@@ -261,6 +371,9 @@ cmake --workflow --preset tsan                       # every test under ThreadSa
 build/release/bench/bench-ring --cpus 0 2              # the ring vs a mutex queue, pinned
 build/dev/tests/waferedge-tests "[decision],[doorbell],[analyzer],[edge]"
 build/dev/tests/waferedge-alloc-tests "[edge]"       # the edge hot path allocates nothing
+build/dev/tests/waferedge-tests "[histogram]"        # the latency histogram
+build/release/bench/bench-latency                    # sort -> decision / HOLD by load
+build/release/bench/bench-latency --workers 2 --rates 40000,80000 --seconds 2
 build/release/tools/tool-emulator tests/data/waferlens_sample.wmap --port 5000 --rate 5 &
 python3 -m venv /tmp/secsgem-venv && /tmp/secsgem-venv/bin/pip install secsgem==0.3.0
 /tmp/secsgem-venv/bin/python tools/secsgem_host.py --port 5000 --hold LOT-000281

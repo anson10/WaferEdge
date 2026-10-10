@@ -16,6 +16,11 @@ if(WAFEREDGE_TESTS)
   add_executable(bench-emulator bench_emulator.cpp)
   target_link_libraries(bench-emulator PRIVATE waferedge waferedge_synth waferedge_options)
 
+  # Sort result to decision and to HOLD: the emulator and the edge host in one process.
+  add_executable(bench-latency bench_latency.cpp)
+  target_link_libraries(bench-latency PRIVATE waferedge waferedge_synth waferedge_options)
+  target_compile_definitions(bench-latency PRIVATE WAFEREDGE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+
   add_executable(bench-hsms bench_hsms.cpp)
   target_link_libraries(bench-hsms PRIVATE waferedge waferedge_synth waferedge_alloc_counter
                         waferedge_options benchmark::benchmark)

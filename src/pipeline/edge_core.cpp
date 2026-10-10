@@ -118,6 +118,9 @@ std::size_t EdgeCore::drain(gem::Link& link) {
 void EdgeCore::decide(const Verdict& verdict, gem::Link& link) {
     ++stats_.verdicts;
     ++stats_.by_pattern[static_cast<std::size_t>(verdict.pattern) % kPatternCount];
+    if (observer_) {
+        observer_(verdict, Clock::now());
+    }
     const auto pattern = decision_.observe(verdict.lot, verdict.pattern);
     if (!pattern) {
         return;

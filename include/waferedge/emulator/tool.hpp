@@ -31,6 +31,9 @@ struct ToolConfig {
     ReplayConfig replay{};
     bool auto_online = true;    // go on-line when communication is established
     bool stop_when_done = true; // separate and stop once every report is acknowledged
+    // ...after staying connected this long: the host acknowledges a report before analysing
+    // it, so HOLDs for the last lots can still be on their way (ADR-0014).
+    hsms::Duration linger{};
 };
 
 // One line per noteworthy event, for the command-line tool's log.
@@ -79,7 +82,8 @@ private:
     // A wafer taken from the schedule but not yet sent (window full, or the link went down):
     // sent first, late, before the schedule moves on.
     std::optional<Replay::Due> blocked_;
-    bool window_blocked_ = false; // blocked_ waits for a reply, not for a timer
+    bool window_blocked_ = false;      // blocked_ waits for a reply, not for a timer
+    std::optional<TimePoint> done_at_; // every wafer answered; stop at done_at_ + linger
     bool stopped_ = false;
 };
 

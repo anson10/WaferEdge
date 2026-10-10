@@ -47,11 +47,13 @@ void say(std::FILE* to, std::format_string<Args...> fmt, Args&&... args) {
 int usage() {
     std::fputs(
         "usage: tool-emulator <maps.wmap> [--port N] [--rate WAFERS_PER_S] [--limit N]\n"
-        "                    [--device-id N] [--keep-running]\n"
+        "                    [--device-id N] [--linger S] [--keep-running]\n"
         "  --port         TCP port to listen on (default 5000)\n"
         "  --rate         wafers per second, constant-rate schedule (default 10; 0: no pacing)\n"
         "  --limit        replay only the first N wafers in tested_at order\n"
         "  --device-id    HSMS session id of the data messages (default 0)\n"
+        "  --linger       when every wafer is answered, stay connected S seconds more for the\n"
+        "                 HOLDs of the last lots (default 1)\n"
         "  --keep-running don't stop when every wafer is answered\n",
         stderr);
     return 2;
@@ -70,6 +72,7 @@ int main(int argc, char** argv) {
     const std::string_view path = argv[1];
     unsigned short port = 5000;
     emulator::ToolConfig config;
+    double linger_s = 1.0;
     for (int i = 2; i < argc; ++i) {
         const std::string_view arg = argv[i];
         const bool has_value = i + 1 < argc;
@@ -78,6 +81,9 @@ int main(int argc, char** argv) {
         } else if (arg == "--port" && has_value && parse(argv[i + 1], port)) {
             ++i;
         } else if (arg == "--rate" && has_value && parse(argv[i + 1], config.replay.rate)) {
+            ++i;
+        } else if (arg == "--linger" && has_value && parse(argv[i + 1], linger_s) &&
+                   linger_s >= 0) {
             ++i;
         } else if (arg == "--limit" && has_value && parse(argv[i + 1], config.replay.limit)) {
             ++i;
@@ -89,6 +95,8 @@ int main(int argc, char** argv) {
         }
     }
 
+    config.linger =
+        std::chrono::duration_cast<hsms::Duration>(std::chrono::duration<double>(linger_s));
     auto maps = MapSet::load(path);
     if (!maps) {
         say(stderr, "tool-emulator: {}", maps.error());

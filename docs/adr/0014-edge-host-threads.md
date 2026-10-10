@@ -9,7 +9,7 @@ holds a lot (S2F41) when it sees an excursion. Three kinds of work compete for t
 network (HSMS framing, GEM, the S6F12 that must answer each report within the tool's T3),
 the detectors (tens to hundreds of microseconds per map, more on the GPU path with batching),
 and the decision to hold. The network must never wait for a detector, or the tool's
-transactions time out. The hot path must not allocate (CLAUDE.md), and every stage's time
+transactions time out. The hot path must not allocate (a project rule), and every stage's time
 must be measurable for the latency work later in phase 4.
 
 ## Options considered
@@ -70,8 +70,8 @@ Option 3, in `pipeline::`:
   now read when each step happens. (2) The end of a replay: the host acknowledges a report
   before analysing it, so the emulator, which stops once every S6F12 is in, can leave before
   the last lot's HOLD. A real tool keeps running; the test stops the emulator only when the
-  edge host has settled, and the command-line tools show the effect as a hold "decided" but
-  not "answered".
+  edge host has settled, and the emulator now lingers after its last answer
+  (`ToolConfig::linger`, 1 s in `tool-emulator`).
 - Verdicts from different workers can reach the decision out of wafer order. The rule counts
   within a window of recent verdicts, so a reordering of a few wafers barely changes it.
 - A forgotten lot that reappears starts afresh, and a second HOLD gets HCACK 5 ("already in
