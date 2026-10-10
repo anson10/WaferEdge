@@ -344,15 +344,18 @@ commands:
   host's network thread stopped together for 1.1–1.5 s, which points at the process or the
   WSL2 VM being paused, not at the pipeline. At 10,000/s the open-loop schedule shows what
   follows: ~14,000 overdue wafers go out at once, flood the rings, and 12,866 are dropped.
-  A closed-loop benchmark would have hidden the stall. The other rows of the same runs are
-  clean (1,000–5,000/s: p99 0.7–2.3 ms), so the stall is intermittent; its cause is still
-  open.
+  A closed-loop benchmark would have hidden the stall. It didn't come back: six more runs at
+  100 and 10,000/s had p99 of 0.9–9.8 ms, and `bench-emulator` alone was clean up to
+  50,000/s. So it was a rare pause of the process or the VM (WSL2, Windows), not something
+  the pipeline does. That is also why each benchmark row is worth repeating before quoting.
 - **Without the stalls the laptop is steadier than the container:** p99 of 0.7–2.3 ms at
   1,000–5,000/s against 24–40 ms there, because the emulator's lateness stays below
   0.25 ms at p99.
 - **Its worker saturates sooner:** about 20,000 synthetic maps/s for one worker (container:
-  ~32,000), and two workers already drop at 40,000/s. The workers were not pinned, so a
-  worker may share a core with the network or tool thread.
+  ~32,000), and two workers already drop at 40,000/s. Not because of core sharing: pinned to
+  separate cores (`--cpus 0,2,4`), one worker still dropped 2,289 wafers at 20,000/s. It is
+  the laptop's per-core speed at this work: signals + rules ran at ~14,000 real WaferLens
+  maps/s on one core (docs/evaluation.md), the Hough transform the largest part.
 - **Real WaferLens maps** hold 10,000 wafers/s on one worker without drops; the p99 of 15 ms
   is the ring backing up near the worker's capacity. At 100/s the first 2,000 wafers in
   `tested_at` order contain no excursion that trips 3 of 5, so no hold.
