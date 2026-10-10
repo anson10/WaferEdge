@@ -100,6 +100,23 @@ public:
         head_.value.store(head_.value.load(std::memory_order_relaxed) + 1,
                           std::memory_order_release);
     }
+    // The i-th oldest published slot (peek(0) == front()), or nullptr if fewer than i + 1 are
+    // published: a consumer that takes a batch looks at several slots in place.
+    [[nodiscard]] T* peek(std::size_t i) noexcept {
+        const std::size_t head = head_.value.load(std::memory_order_relaxed);
+        if (!CacheIndices || consumer_.tail_cache - head <= i) {
+            consumer_.tail_cache = tail_.value.load(std::memory_order_acquire);
+            if (consumer_.tail_cache - head <= i) {
+                return nullptr;
+            }
+        }
+        return &slots_[(head + i) & (N - 1)];
+    }
+    // Frees the n oldest slots at once. Precondition: peek(n - 1) returned a slot.
+    void pop(std::size_t n) noexcept {
+        head_.value.store(head_.value.load(std::memory_order_relaxed) + n,
+                          std::memory_order_release);
+    }
     [[nodiscard]] bool try_pop(T& out) noexcept(std::is_nothrow_move_assignable_v<T>) {
         T* slot = front();
         if (slot == nullptr) {

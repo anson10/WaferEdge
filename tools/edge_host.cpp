@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstdio>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -59,7 +60,8 @@ int usage() {
     std::fputs(
         "usage: waferedge-edge [--host ADDR] [--port N] [--rules FILE] [--k N] [--window N]\n"
         "                      [--workers N] [--spin-us N] [--cpus NET,W1,W2,...]\n"
-        "                      [--keep-running]\n"
+        "                      [--detector SPEC] [--batch B] [--deadline-us D]\n"
+        "                      [--model FILE] [--scales FILE] [--keep-running]\n"
         "  --host, --port  the tool to connect to (default 127.0.0.1:5000)\n"
         "  --rules         classifier thresholds (default config/rules.txt)\n"
         "  --k, --window   hold after k wafers of one lot with the same signature among its\n"
@@ -67,6 +69,11 @@ int usage() {
         "  --workers       analytics threads (default 1)\n"
         "  --spin-us       a worker's busy-wait before it sleeps (default 50)\n"
         "  --cpus          pin the network thread, then each worker, to these CPUs\n"
+        "  --detector      rules (default), cnn-cpu, rules-gpu, cnn-fp32|fp16|int8, or A+B\n"
+        "                  (A decides, B's agreement is counted; docs/pipeline.md)\n"
+        "  --batch, --deadline-us  a worker's batch: B wafers, or when the oldest waited D us\n"
+        "  --model, --scales  FabEye's CNN (default data/fabeye_cnn.wcnn) and int8 scales\n"
+        "                  (default data/fabeye_int8_scales.txt)\n"
         "  --keep-running  reconnect when the tool leaves, until Ctrl-C\n",
         stderr);
     return 2;
@@ -98,6 +105,9 @@ int main(int argc, char** argv) {
     std::string host = "127.0.0.1";
     unsigned short port = 5000;
     std::string rules_path = "config/rules.txt";
+    std::string detector = "rules";
+    std::string model_path = "data/fabeye_cnn.wcnn";
+    std::string scales_path = "data/fabeye_int8_scales.txt";
     std::vector<int> cpus;
     EdgeHostConfig config;
     for (int i = 1; i < argc; ++i) {
@@ -131,6 +141,19 @@ int main(int argc, char** argv) {
             config.analyzer.spin = std::chrono::microseconds(spin);
         } else if (arg == "--cpus") {
             ok = parse_list(value, cpus);
+        } else if (arg == "--detector") {
+            detector = value;
+        } else if (arg == "--batch") {
+            ok = parse(value, config.analyzer.batch) && config.analyzer.batch >= 1 &&
+                 config.analyzer.batch <= kMaxBatch;
+        } else if (arg == "--deadline-us") {
+            unsigned d = 0;
+            ok = parse(value, d);
+            config.analyzer.deadline = std::chrono::microseconds(d);
+        } else if (arg == "--model") {
+            model_path = value;
+        } else if (arg == "--scales") {
+            scales_path = value;
         } else {
             ok = false;
         }
@@ -150,6 +173,27 @@ int main(int argc, char** argv) {
         say(stderr, "waferedge-edge: {}", classifier.error());
         return 1;
     }
+    std::optional<cnn::Model> model;
+    DetectorResources resources;
+    resources.rules = &*classifier;
+    if (detector.find("cnn") != std::string::npos) {
+        auto loaded = cnn::load_model(model_path);
+        if (!loaded) {
+            say(stderr, "waferedge-edge: {}", loaded.error());
+            return 1;
+        }
+        model.emplace(std::move(*loaded));
+        resources.model = &*model;
+        if (detector.find("cnn-int8") != std::string::npos) {
+            resources.int8_max = gpu::read_activation_max(scales_path);
+        }
+    }
+    auto factory = detector_factory(detector, resources);
+    if (!factory) {
+        say(stderr, "waferedge-edge: {}", factory.error());
+        return 1;
+    }
+    config.detector = *factory;
     asio::error_code ec;
     const auto address = asio::ip::make_address(host, ec);
     if (ec) {
@@ -159,8 +203,11 @@ int main(int argc, char** argv) {
     if (!cpus.empty() && !pin_current_thread(cpus.front())) {
         say(stderr, "waferedge-edge: could not pin the network thread to CPU {}", cpus.front());
     }
-    say(stdout, "waferedge-edge: tool {}:{}, hold after {} of {} wafers, {} worker(s)", host, port,
-        config.edge.decision.k, config.edge.decision.window, config.workers);
+    say(stdout,
+        "waferedge-edge: tool {}:{}, hold after {} of {} wafers, detector {} (batch {}, "
+        "deadline {} us), {} worker(s)",
+        host, port, config.edge.decision.k, config.edge.decision.window, detector,
+        config.analyzer.batch, config.analyzer.deadline.count(), config.workers);
 
     asio::io_context io(1);
     const auto start = Clock::now();

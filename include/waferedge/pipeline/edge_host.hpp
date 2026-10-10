@@ -32,8 +32,9 @@ struct EdgeHostConfig {
     hsms::Config hsms{}; // role is forced to active
     EdgeConfig edge{};
     int workers = 1;              // analytics threads
-    AnalyzerConfig analyzer{};    // spin; cpu is ignored here (see worker_cpus)
+    AnalyzerConfig analyzer{};    // spin, batch, deadline; cpu is ignored here (worker_cpus)
     std::vector<int> worker_cpus; // worker i is pinned to worker_cpus[i] if given
+    DetectorFactory detector;     // each worker's detector; empty: the rules (RulesDetector)
     bool stop_when_tool_leaves = true;
 };
 

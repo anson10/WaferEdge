@@ -7,7 +7,9 @@ time from sort to hold is measured. This page grows with the phase; so far it co
 ADR-0012), the **SPSC ring** the edge host's threads hand wafers over with
 (`include/waferedge/pipeline/spsc_ring.hpp`; ADR-0013), the **edge host** itself
 (`include/waferedge/pipeline/`, `src/pipeline/`, `tools/edge_host.cpp`; ADR-0014), and the
-**latency** from sort result to hold (`bench/bench_latency.cpp`; ADR-0015).
+**latency** from sort result to hold (`bench/bench_latency.cpp`; ADR-0015), and the
+**experiments** with detectors and batching (`include/waferedge/pipeline/detector.hpp`;
+ADR-0016).
 
 ```
  tool-emulator (passive HSMS, GEM equipment)          waferedge-edge (active HSMS, GEM host)
@@ -360,6 +362,44 @@ commands:
   is the ring backing up near the worker's capacity. At 100/s the first 2,000 wafers in
   `tested_at` order contain no excursion that trips 3 of 5, so no hold.
 
+## Experiments: which detector, which batch
+
+The workers run a pluggable `pipeline::Detector` on batches (ADR-0016). A batch starts when
+`--batch` wafers wait, or when the oldest has waited `--deadline-us` since it arrived.
+Batch 1 is "each wafer at once".
+
+| `--detector` | What runs | Calls |
+|---|---|---|
+| `rules` (default) | signals on the CPU (AVX2 features), the fitted rule table | per map |
+| `cnn-cpu` | FabEye's CNN, the CPU reference forward pass | per map |
+| `rules-gpu` | the GPU signature engine's features, Hough line and clusters, then the same rules | one per batch |
+| `cnn-fp32`, `cnn-fp16`, `cnn-int8` | the CNN on WaferEdge's GPU engine | one per batch |
+| `A+B` | A decides; B's pattern is recorded, and the agreement reported | both |
+
+`bench-latency` scores every run against truth as it goes: the share of verdicts that
+match their map's label, and the held lots against the excursion lots (precision: held lots
+that were excursions; recall: excursion lots that were held).
+
+Batching the CPU rules only adds the wait for a batch to fill. Synthetic maps, 2 ms
+deadline, one worker, **4-thread cloud container**:
+
+| Batch | Wafers/s | Decision p50 | p99 | p99.9 | Dropped |
+|---|---|---|---|---|---|
+| 1 | 1,000 | 340 µs | 1.3 ms | 3.2 ms | 0 |
+| 1 | 10,000 | 104 µs | 3.5 ms | 7.4 ms | 0 |
+| 16 | 1,000 | 1.5 ms | 3.5 ms | 7.1 ms | 0 |
+| 16 | 10,000 | 1.3 ms | 2.2 ms | 2.6 ms | 0 |
+| 64 | 1,000 | 1.4 ms | 2.8 ms | 4.6 ms | 0 |
+| 64 | 10,000 | 1.7 ms | 26.9 ms | 37.5 ms | 158 |
+
+At 1,000 wafers/s a batch of 16 never fills, so every wafer waits up to the 2 ms deadline.
+At 10,000/s a batch of 16 fills in 1.6 ms; a batch of 64 never fills and ends at the
+deadline. All rows held the same 12 / 120 lots with 100% precision and recall: batching
+changes when a decision is made, not what it is.
+
+The GPU and CNN rows need the laptop (the container has no GPU and no FabEye model). They
+come from the commands under Reproduce, and are added here when measured.
+
 ## Reproduce
 
 ```sh
@@ -374,6 +414,13 @@ build/dev/tests/waferedge-alloc-tests "[edge]"       # the edge hot path allocat
 build/dev/tests/waferedge-tests "[histogram]"        # the latency histogram
 build/release/bench/bench-latency                    # sort -> decision / HOLD by load
 build/release/bench/bench-latency --workers 2 --rates 40000,80000 --seconds 2
+build/dev/tests/waferedge-tests "[detector]"         # detectors, factory, batching
+build/release/bench/bench-latency --batch 16 --deadline-us 2000   # batching the CPU rules
+# On the laptop, cuda build and FabEye's model (tools/export_cnn.py --out data):
+ctest --preset cuda -L gpu                           # includes rules-gpu == rules
+build/cuda/bench/bench-latency --maps data/waferlens_demo.wmap --rates 100,1000 --detector cnn-cpu
+build/cuda/bench/bench-latency --maps data/waferlens_demo.wmap --rates 100,1000,10000 \
+    --detector cnn-fp16+rules --batch 64 --deadline-us 2000
 build/release/tools/tool-emulator tests/data/waferlens_sample.wmap --port 5000 --rate 5 &
 python3 -m venv /tmp/secsgem-venv && /tmp/secsgem-venv/bin/pip install secsgem==0.3.0
 /tmp/secsgem-venv/bin/python tools/secsgem_host.py --port 5000 --hold LOT-000281

@@ -3,6 +3,13 @@
 //   build/release/bench/bench-latency [--maps FILE.wmap] [--rates 100,1000,10000]
 //                                     [--seconds S] [--workers N] [--spin-us N]
 //                                     [--k K] [--window W] [--cpus TOOL,NET,W1,...]
+//                                     [--detector SPEC] [--batch B] [--deadline-us D]
+//                                     [--model FILE.wcnn] [--scales FILE.txt]
+//
+// --detector picks what the workers run (ADR-0016): rules (default), cnn-cpu, rules-gpu,
+// cnn-fp32 / cnn-fp16 / cnn-int8, or two joined by '+' (the first decides, the agreement is
+// reported). Batches start at B wafers or when the oldest has waited D µs. The CNN reads
+// FabEye's model from data/fabeye_cnn.wcnn (tools/export_cnn.py), int8 also its scales.
 //
 // The tool emulator and the edge host run in one process: the emulator on this thread, the
 // edge host's network thread on another, its analytics workers on their own, all on one
@@ -21,6 +28,11 @@
 //
 // Without --maps the wafers are synthetic 40 x 40 maps: lots of 25, every tenth lot with a
 // centre blob from its 6th wafer on (an excursion the rule holds), the rest sparse noise.
+//
+// Accuracy, from the same run: each verdict against its map's truth (wafers with unknown
+// truth skipped), and the holds against the lots: a lot is an excursion if any of its
+// replayed wafers has a pattern for truth. Precision: held lots that are excursions; recall:
+// excursion lots that were held.
 #include "support/synth.hpp"
 #include "waferedge/emulator/tool.hpp"
 #include "waferedge/pipeline/edge_host.hpp"
@@ -40,6 +52,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace waferedge;
@@ -134,6 +147,8 @@ struct Synthetic {
 
 struct Sample {
     std::uint64_t wafer = 0;
+    Pattern pattern = Pattern::none;
+    Pattern second = Pattern::unknown;
     TimePoint received, analysed, decided;
 };
 
@@ -143,12 +158,19 @@ struct Row {
     std::size_t sent = 0, decided = 0, dropped = 0, window_full = 0;
     LatencyHistogram late, to_host, analyse, decide, total, hold;
     std::size_t holds = 0, holds_answered = 0;
+    // Accuracy.
+    std::size_t scored = 0, correct = 0;     // verdicts with a known truth, and right ones
+    std::size_t paired = 0, agree = 0;       // verdicts with a second detector's pattern
+    std::size_t lots_bad = 0, held_bad = 0;  // excursion lots, and those held
+    std::size_t held_lots = 0;               // lots held (recorded)
+    std::uint64_t batches = 0, failures = 0; // detector calls, and failed ones
 };
 
 struct Options {
     std::vector<double> rates{100, 1'000, 5'000, 10'000, 20'000};
     double seconds = 3;
     EdgeHostConfig edge;
+    std::string detector = "rules";
     std::vector<int> cpus; // tool, network, workers...
 };
 
@@ -175,7 +197,7 @@ Row run(std::span<const WaferRecord> records, double rate, std::size_t n, const 
     samples.reserve(n);
     edge.set_observer([&](const Verdict& v, TimePoint decided) {
         if (samples.size() < samples.capacity()) {
-            samples.push_back({v.wafer, v.received, v.analysed, decided});
+            samples.push_back({v.wafer, v.pattern, v.second, v.received, v.analysed, decided});
         }
     });
 
@@ -222,6 +244,15 @@ Row run(std::span<const WaferRecord> records, double rate, std::size_t n, const 
             continue;
         }
         const TimePoint scheduled = *replay.scheduled(it->second);
+        const Pattern truth = replay.record(it->second).truth;
+        if (truth != Pattern::unknown) {
+            ++row.scored;
+            row.correct += s.pattern == truth ? 1U : 0U;
+        }
+        if (s.second != Pattern::unknown) {
+            ++row.paired;
+            row.agree += s.pattern == s.second ? 1U : 0U;
+        }
         row.to_host.record(ns(s.received - scheduled));
         row.analyse.record(ns(s.analysed - s.received));
         row.decide.record(ns(s.decided - s.analysed));
@@ -237,6 +268,27 @@ Row run(std::span<const WaferRecord> records, double rate, std::size_t n, const 
         }
         ++row.holds_answered;
         row.hold.record(ns(*at_tool - *replay.scheduled(it->second)));
+    }
+    // Lots: an excursion if any replayed wafer has a pattern for truth.
+    std::unordered_set<std::string_view> bad;
+    for (std::size_t i = 0; i < std::min(n, replay.size()); ++i) {
+        const Pattern truth = replay.record(i).truth;
+        if (truth != Pattern::none && truth != Pattern::unknown) {
+            bad.insert(replay.lot_of(i));
+        }
+    }
+    std::unordered_set<std::string> held;
+    for (const HoldRecord& h : edge.core().holds()) {
+        held.emplace(h.lot.view());
+    }
+    row.lots_bad = bad.size();
+    row.held_lots = held.size();
+    for (const auto& lot : held) {
+        row.held_bad += bad.contains(lot) ? 1U : 0U;
+    }
+    for (const auto& a : edge.analyzers()) {
+        row.batches += a->batches();
+        row.failures += a->failures();
     }
     row.sent = replay.stats().sent;
     row.decided = row.total.count();
@@ -254,6 +306,8 @@ Row run(std::span<const WaferRecord> records, double rate, std::size_t n, const 
 int main(int argc, char** argv) {
     Options o;
     std::string maps_path;
+    std::string model_path = WAFEREDGE_SOURCE_DIR "/data/fabeye_cnn.wcnn";
+    std::string scales_path = WAFEREDGE_SOURCE_DIR "/data/fabeye_int8_scales.txt";
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
         if (i + 1 >= argc) {
@@ -279,6 +333,19 @@ int main(int argc, char** argv) {
             ok = parse(value, o.edge.edge.decision.window);
         } else if (arg == "--cpus") {
             ok = parse_list(value, o.cpus);
+        } else if (arg == "--detector") {
+            o.detector = value;
+        } else if (arg == "--batch") {
+            ok = parse(value, o.edge.analyzer.batch) && o.edge.analyzer.batch >= 1 &&
+                 o.edge.analyzer.batch <= kMaxBatch;
+        } else if (arg == "--deadline-us") {
+            unsigned d = 0;
+            ok = parse(value, d);
+            o.edge.analyzer.deadline = std::chrono::microseconds(d);
+        } else if (arg == "--model") {
+            model_path = value;
+        } else if (arg == "--scales") {
+            scales_path = value;
         } else {
             ok = false;
         }
@@ -294,6 +361,28 @@ int main(int argc, char** argv) {
         std::fputs(std::format("bench-latency: {}\n", classifier.error()).c_str(), stderr);
         return 1;
     }
+    // The CNN's model and int8 scales, only if the detector needs them.
+    std::optional<cnn::Model> model;
+    DetectorResources resources;
+    resources.rules = &*classifier;
+    if (o.detector.find("cnn") != std::string::npos) {
+        auto loaded = cnn::load_model(model_path);
+        if (!loaded) {
+            std::fputs(std::format("bench-latency: {}\n", loaded.error()).c_str(), stderr);
+            return 1;
+        }
+        model.emplace(std::move(*loaded));
+        resources.model = &*model;
+        if (o.detector.find("cnn-int8") != std::string::npos) {
+            resources.int8_max = gpu::read_activation_max(scales_path);
+        }
+    }
+    auto factory = detector_factory(o.detector, resources);
+    if (!factory) {
+        std::fputs(std::format("bench-latency: {}\n", factory.error()).c_str(), stderr);
+        return 1;
+    }
+    o.edge.detector = *factory;
 
     // Each rate runs for `seconds`, and at least 2,000 wafers (for a p99.9 worth reading).
     const auto wafers = [&](double rate) {
@@ -319,9 +408,11 @@ int main(int argc, char** argv) {
         records = synthetic->records;
     }
 
-    std::puts(std::format("{} wafers ({}); hold after {} of {}; {} worker(s), spin {} µs{}",
+    std::puts(std::format("{} wafers ({}); hold after {} of {}; detector {}, batch {}, deadline "
+                          "{} µs; {} worker(s), spin {} µs{}",
                           maps_path.empty() ? "synthetic 40x40" : maps_path, records.size(),
-                          o.edge.edge.decision.k, o.edge.edge.decision.window, o.edge.workers,
+                          o.edge.edge.decision.k, o.edge.edge.decision.window, o.detector,
+                          o.edge.analyzer.batch, o.edge.analyzer.deadline.count(), o.edge.workers,
                           o.edge.analyzer.spin.count(), o.cpus.empty() ? "" : ", pinned")
                   .c_str());
     std::puts(
@@ -352,6 +443,23 @@ int main(int argc, char** argv) {
         };
         std::puts(std::format("| {:.0f} | {} | {} | {} | {} | {} |", r.rate, pair(r.late),
                               pair(r.to_host), pair(r.analyse), pair(r.decide), r.window_full)
+                      .c_str());
+    }
+    std::puts(
+        "\nAccuracy of the same runs (verdicts against truth; holds against excursion lots):\n");
+    std::puts("| Wafers/s | Wafers right | Held lots | Precision | Recall | Agreement | Batches | "
+              "Failed |");
+    std::puts("|---|---|---|---|---|---|---|---|");
+    const auto pct = [](std::size_t a, std::size_t b) {
+        return b == 0 ? std::string("-")
+                      : std::format("{:.1f}%",
+                                    100.0 * static_cast<double>(a) / static_cast<double>(b));
+    };
+    for (const Row& r : rows) {
+        std::puts(std::format("| {:.0f} | {} | {} | {} | {} | {} | {} | {} |", r.rate,
+                              pct(r.correct, r.scored), r.held_lots, pct(r.held_bad, r.held_lots),
+                              pct(r.held_bad, r.lots_bad), pct(r.agree, r.paired), r.batches,
+                              r.failures)
                       .c_str());
     }
 }

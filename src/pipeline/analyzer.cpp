@@ -1,5 +1,7 @@
 #include "waferedge/pipeline/analyzer.hpp"
 
+#include <algorithm>
+
 #if defined(__x86_64__)
 #include <immintrin.h>
 #endif
@@ -35,11 +37,17 @@ bool pin_current_thread(int cpu) noexcept {
 #endif
 }
 
+Analyzer::Analyzer(std::unique_ptr<Detector> detector, AnalyzerConfig config,
+                   std::function<void()> on_verdict)
+    : detector_(std::move(detector)), config_(config), on_verdict_(std::move(on_verdict)),
+      wafers_(std::make_unique<SpscRing<WaferSlot, kSlots>>()),
+      verdicts_(std::make_unique<SpscRing<Verdict, kSlots>>()) {
+    config_.batch = std::clamp<std::size_t>(config_.batch, 1, kMaxBatch);
+}
+
 Analyzer::Analyzer(const RuleClassifier& classifier, AnalyzerConfig config,
                    std::function<void()> on_verdict)
-    : classifier_(classifier), config_(config), on_verdict_(std::move(on_verdict)),
-      wafers_(std::make_unique<SpscRing<WaferSlot, kSlots>>()),
-      verdicts_(std::make_unique<SpscRing<Verdict, kSlots>>()) {}
+    : Analyzer(std::make_unique<RulesDetector>(classifier), config, std::move(on_verdict)) {}
 
 Analyzer::~Analyzer() {
     stop();
@@ -60,43 +68,65 @@ void Analyzer::stop() {
     }
 }
 
-Verdict Analyzer::analyse(const WaferSlot& wafer) noexcept {
-    const Decision d = classifier_.classify(extractor_.extract(wafer.map()));
-    return {.seq = wafer.seq,
-            .lot = wafer.lot,
-            .wafer = wafer.wafer,
-            .pattern = d.pattern,
-            .rule = d.rule,
-            .received = wafer.received,
-            .analysed = Clock::now()};
-}
-
 bool Analyzer::has_work() noexcept {
     return wafers_->front() != nullptr;
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape): std::function::operator() only throws when empty
-std::size_t Analyzer::drain() noexcept {
-    std::size_t n = 0;
-    while (const WaferSlot* wafer = wafers_->front()) {
-        Verdict* verdict = verdicts_->begin_push();
-        if (verdict == nullptr) {
-            break; // the network thread hasn't taken the last kSlots verdicts yet
+std::size_t Analyzer::drain(bool flush) noexcept {
+    std::size_t done = 0;
+    for (;;) {
+        std::size_t n = 0;
+        while (n < config_.batch && wafers_->peek(n) != nullptr) {
+            ++n;
         }
-        *verdict = analyse(*wafer); // the slot is read in place, then freed
-        wafers_->pop();
-        verdicts_->commit_push();
-        analysed_.fetch_add(1, std::memory_order_relaxed);
-        ++n;
+        if (n == 0) {
+            return done;
+        }
+        // A partial batch waits for more wafers until its oldest has waited `deadline`.
+        if (n < config_.batch && !flush &&
+            Clock::now() - wafers_->peek(0)->received < config_.deadline) {
+            return done;
+        }
+        // Room for n verdicts? The network thread only frees slots meanwhile, so this is a
+        // lower bound.
+        n = std::min(n, kSlots - verdicts_->size_approx());
+        if (n == 0) {
+            return done; // the network thread hasn't taken the last kSlots verdicts yet
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            views_[i] = wafers_->peek(i)->map(); // read in place, freed by pop(n) below
+        }
+        const bool ok = detector_->detect(std::span(views_).first(n), std::span(results_).first(n));
+        const TimePoint analysed = Clock::now();
+        for (std::size_t i = 0; i < n; ++i) {
+            const WaferSlot& wafer = *wafers_->peek(i);
+            Verdict* verdict = verdicts_->begin_push(); // room checked above
+            *verdict = {.seq = wafer.seq,
+                        .lot = wafer.lot,
+                        .wafer = wafer.wafer,
+                        .pattern = ok ? results_[i].pattern : Pattern::unknown,
+                        .rule = ok ? results_[i].rule : -1,
+                        .second = ok ? results_[i].second : Pattern::unknown,
+                        .received = wafer.received,
+                        .analysed = analysed};
+            verdicts_->commit_push();
+        }
+        wafers_->pop(n);
+        analysed_.fetch_add(n, std::memory_order_relaxed);
+        batches_.fetch_add(1, std::memory_order_relaxed);
+        if (!ok) {
+            failures_.fetch_add(1, std::memory_order_relaxed);
+        }
+        done += n;
         if (on_verdict_) {
             on_verdict_();
         }
     }
-    return n;
 }
 
 std::size_t Analyzer::poll() noexcept {
-    return drain();
+    return drain(true);
 }
 
 void Analyzer::run() noexcept {
@@ -104,11 +134,13 @@ void Analyzer::run() noexcept {
         (void)pin_current_thread(config_.cpu);
     }
     while (!stop_.load(std::memory_order_acquire)) {
-        if (drain() > 0) {
+        if (drain(false) > 0) {
             continue;
         }
         if (has_work()) {
-            std::this_thread::yield(); // wafers waiting, but the verdict ring is full
+            // A partial batch before its deadline, or the verdict ring is full: keep checking
+            // (deadlines are milliseconds, and a futex wait has no timeout).
+            cpu_relax();
             continue;
         }
         // Empty: spin a while (a wafer arriving now starts in well under a microsecond)...

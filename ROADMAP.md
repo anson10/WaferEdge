@@ -220,6 +220,8 @@ Putting it together, closed loop, with honest tail latency.
       rare 1.1–1.5 s whole-process pause under WSL2, not reproduced in six more runs)
 - [ ] Experiments: rules on CPU vs GPU vs the CNN (fp16 / int8), batch size / deadline, load
       (maps/s) vs tail latency
+      (in progress: `pipeline::Detector` for every one of them, batches by size or deadline,
+      ADR-0016; CPU rows measured, GPU and CNN rows to measure on the laptop)
 - [ ] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,
       against WaferLens's batch pattern alarm (median 52 h, mostly sort lag) and against no hold
 - [ ] `docs/pipeline.md` and an ADR (threading and queue design)

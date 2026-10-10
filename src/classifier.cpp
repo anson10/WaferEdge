@@ -59,12 +59,22 @@ void set(Signals& s, Signal which, double value) noexcept {
 } // namespace
 
 Signals SignalExtractor::extract(WaferMapView map) {
-    Signals s{};
     // The fastest backend this CPU has; every backend gives the same counts.
     const auto f = best_features()(map, geometry_.get(map.rows(), map.cols()));
+    const double z = join_count_z(join_count(map));
+    if (f.fails == 0) {
+        return compose(map, f, z, nullptr, HoughLine{}); // only density and z: no clusters, no line
+    }
+    clusters_.run(map);
+    return compose(map, f, z, clusters_.largest(), hough_.run(map));
+}
+
+Signals SignalExtractor::compose(WaferMapView map, const Features& f, double z,
+                                 const Cluster* largest, const HoughLine& line) noexcept {
+    Signals s{};
     const double density = fail_density(f);
     set(s, Signal::density, density);
-    set(s, Signal::z, join_count_z(join_count(map)));
+    set(s, Signal::z, z);
     if (f.fails == 0) {
         return s; // every other signal compares fails against something: all 0
     }
@@ -81,18 +91,16 @@ Signals SignalExtractor::extract(WaferMapView map) {
     }
     set(s, Signal::ring, ring / density);
 
-    clusters_.run(map);
-    if (const Cluster* big = clusters_.largest()) {
-        const auto sh = shape(*big);
-        set(s, Signal::cluster_share, static_cast<double>(big->size) / f.fails);
-        set(s, Signal::cluster_size, static_cast<double>(big->size) / f.dies);
+    if (largest != nullptr) {
+        const auto sh = shape(*largest);
+        set(s, Signal::cluster_share, static_cast<double>(largest->size) / f.fails);
+        set(s, Signal::cluster_size, static_cast<double>(largest->size) / f.dies);
         const double x = (2 * sh.col - (map.cols() - 1)) / map.cols();
         const double y = ((map.rows() - 1) - 2 * sh.row) / map.rows();
         set(s, Signal::cluster_rho, std::sqrt(x * x + y * y));
         set(s, Signal::elongation, sh.elongation);
     }
 
-    const auto line = hough_.run(map);
     set(s, Signal::line, safe_div(safe_div(line.votes, line.line_dies), density));
     // Diameter of a disc with the wafer's die count: line_length 1 is a scratch across.
     const double diameter = 2.0 * std::sqrt(f.dies / std::numbers::pi);

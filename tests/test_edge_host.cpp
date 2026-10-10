@@ -47,7 +47,18 @@ TEST_CASE("edge host: the closed loop against the tool emulator", "[edge][net]")
     pipeline::EdgeHostConfig config;
     config.workers = 2;
     config.edge.decision = {.k = 1, .window = 1, .lots = 64};
+    // Each worker runs a pair from the factory: the rules decide, a second copy of them is
+    // recorded next to each verdict (so they must always agree).
+    pipeline::DetectorResources resources;
+    resources.rules = &*classifier;
+    config.detector = *pipeline::detector_factory("rules+rules", resources);
     pipeline::EdgeHost edge(io.get_executor(), *classifier, config);
+    std::size_t paired = 0;
+    std::size_t agreed = 0;
+    edge.set_observer([&](const pipeline::Verdict& v, pipeline::TimePoint) {
+        paired += v.second != Pattern::unknown ? 1U : 0U;
+        agreed += v.second == v.pattern ? 1U : 0U;
+    });
 
     const auto rethrow = [](const std::exception_ptr& e) {
         if (e) {
@@ -85,6 +96,9 @@ TEST_CASE("edge host: the closed loop against the tool emulator", "[edge][net]")
     CHECK(s.submitted == s.received);
     CHECK(s.verdicts == s.submitted);
     CHECK(s.dropped == 0);
+    CHECK(paired == s.verdicts);
+    CHECK(agreed == s.verdicts);
+    CHECK(edge.analyzers()[0]->detector().name() == "rules+rules");
     // Both workers took wafers (round robin).
     CHECK(edge.analyzers()[0]->analysed() > 0);
     CHECK(edge.analyzers()[1]->analysed() > 0);

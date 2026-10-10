@@ -1,6 +1,7 @@
 #pragma once
 
 #include "waferedge/clusters.hpp"
+#include "waferedge/features.hpp"
 #include "waferedge/geometry.hpp"
 #include "waferedge/hough.hpp"
 #include "waferedge/wafer_map.hpp"
@@ -49,6 +50,11 @@ using Signals = std::array<double, kSignalCount>;
 class SignalExtractor {
 public:
     [[nodiscard]] Signals extract(WaferMapView map);
+    // The signals from detector outputs computed elsewhere (the GPU signature engine): the
+    // map's feature counts, its join-count z, its largest cluster (nullptr: none) and its
+    // strongest Hough line. extract() is compose() over the CPU detectors.
+    [[nodiscard]] static Signals compose(WaferMapView map, const Features& f, double z,
+                                         const Cluster* largest, const HoughLine& line) noexcept;
 
 private:
     GeometryCache geometry_;
