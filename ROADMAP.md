@@ -155,11 +155,11 @@ facts (layers, preprocessing, calibration) are in docs/context.md.
 ## Phase 3 — SECS-II codec and HSMS transport (4–5 days)
 
 The equipment protocol, from the bytes up.
-- [ ] SECS-II **item codec**: all formats (List, Binary, Boolean, ASCII, I1–I8, U1–U8, F4/F8,
+- [x] SECS-II **item codec**: all formats (List, Binary, Boolean, ASCII, I1–I8, U1–U8, F4/F8,
       JIS-8), length bytes, nesting; **zero-copy decode** to views over the receive buffer;
-      encode into a reusable buffer
-- [ ] `constexpr` format tables; `std::expected`-style (or own `Result`) error handling, no
-      exceptions on the hot path
+      encode into a reusable buffer (C2 out of scope; iterative validation, 64 levels max)
+- [x] `constexpr` format tables; `std::expected`-style (or own `Result`) error handling, no
+      exceptions on the hot path (`Error{code, offset}`; the encoder's errors are sticky)
 - [ ] **HSMS** (SEMI E37) transport on Asio coroutines: 10-byte header, data and control
       messages, Select / Deselect / Linktest / Separate, T3 / T5 / T6 / T7 / T8 timers,
       reconnect; active (host) and passive (equipment) roles
@@ -169,11 +169,17 @@ The equipment protocol, from the bytes up.
       S2F41/F42 (host command: HOLD / RELEASE lot); communication and control state machines
 - [ ] Tests: round-trip properties (encode → decode is identity) on random item trees; golden
       byte vectors for known messages; timer behaviour with a fake clock
+      (codec done: 3,000 random trees, golden bytes from secsgem; timers with HSMS)
 - [ ] **Fuzzing**: libFuzzer target on the decoder (and HSMS framing), run in CI for a fixed
       time; corpus checked in; any crash becomes a regression test
+      (decoder done, with a round-trip oracle, 60 s in CI, corpus replayed by every build;
+      HSMS framing with HSMS)
 - [ ] Benchmark: messages/s decoded and encoded, allocation count per message (should be 0)
+      (codec done: `bench-secs`, 0 allocations per message decoded or encoded; HSMS to come)
 - [ ] `docs/secs.md`: the subset implemented, message layouts used, what is out of scope
+      (the codec part written)
 - [ ] ADRs: zero-copy views and error handling; Asio coroutines for HSMS
+      (ADR-0009: zero-copy views and errors)
 
 ## Phase 4 — The edge pipeline (3–4 days)
 

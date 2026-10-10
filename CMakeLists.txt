@@ -35,6 +35,9 @@ if(WAFEREDGE_TESTS)
   add_subdirectory(tests)
 endif()
 
+# After enable_testing(): the fuzz preset registers a corpus run with ctest.
+add_subdirectory(fuzz)
+
 if(WAFEREDGE_BENCH)
   add_subdirectory(bench)
 endif()

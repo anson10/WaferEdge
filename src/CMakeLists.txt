@@ -12,6 +12,8 @@ add_library(waferedge
   machine.cpp
   map_file.cpp
   randomness.cpp
+  secs/encoder.cpp
+  secs/item.cpp
   thread_pool.cpp
   wafer_map.cpp)
 add_library(waferedge::waferedge ALIAS waferedge)
