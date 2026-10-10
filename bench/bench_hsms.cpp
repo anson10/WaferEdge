@@ -1,6 +1,8 @@
 // HSMS: transactions per second and allocations per transaction, for the protocol engine
 // alone (in memory) and for two Sessions over TCP on 127.0.0.1 (one thread, one
 // io_context). The TCP case also reports round-trip percentiles from a 1 us histogram.
+// BM_gem_cycle runs the GEM loop in memory: a 40x40 wafer report and its S6F12, an S2F41
+// HOLD and its S2F42, through gem::Equipment, gem::Host and two engines.
 //
 //   build/release/bench/bench-hsms
 //
@@ -9,6 +11,9 @@
 // is in, so the TCP numbers are round-trip service times on an idle link, not latency under
 // load (no coordinated-omission correction applies; phase 4 measures under load).
 #include "support/alloc_counter.hpp"
+#include "support/synth.hpp"
+#include "waferedge/gem/equipment.hpp"
+#include "waferedge/gem/host.hpp"
 #include "waferedge/hsms/protocol.hpp"
 #include "waferedge/hsms/session.hpp"
 
@@ -140,8 +145,68 @@ void BM_tcp_transaction(benchmark::State& state) {
     io.run_for(1s);
 }
 
+void BM_gem_cycle(benchmark::State& state) {
+    TimePoint now = TimePoint{} + 1h;
+    Config host_config;
+    host_config.role = Role::active;
+    Protocol tool_hsms(Config{});
+    Protocol host_hsms(host_config);
+    gem::ProtocolLink tool_link(tool_hsms, now);
+    gem::ProtocolLink host_link(host_hsms, now);
+    gem::Equipment equipment(gem::EquipmentConfig{});
+    gem::Host host;
+    std::vector<std::uint8_t> to_tool;
+    std::vector<std::uint8_t> to_host;
+    std::optional<Header> command;
+    const auto pump = [&] {
+        for (int i = 0; i < 3; ++i) {
+            pass(host_hsms, tool_hsms, to_tool, now);
+            while (auto e = tool_hsms.poll(now)) {
+                equipment.on_hsms(*e, tool_link, now);
+                while (auto g = equipment.poll()) {
+                    if (const auto* c = std::get_if<gem::LotCommandReceived>(&*g)) {
+                        command = c->primary;
+                    }
+                }
+            }
+            pass(tool_hsms, host_hsms, to_host, now);
+            while (auto e = host_hsms.poll(now)) {
+                host.on_hsms(*e, host_link, now);
+                while (auto g = host.poll()) {
+                    benchmark::DoNotOptimize(g);
+                }
+            }
+        }
+    };
+    host_hsms.on_connected(now);
+    tool_hsms.on_connected(now);
+    pump();
+    equipment.go_online(tool_link);
+    pump();
+    const WaferMap map = synth::random_map(40, 40, 100, 1);
+    const auto cycle = [&] {
+        (void)equipment.report_wafer(tool_link, "LOT-0042", 17, map);
+        (void)host.command(host_link, {gem::LotAction::hold, "LOT-0042"});
+        pump();
+        if (command) {
+            (void)equipment.answer(tool_link, *command, gem::Hcack::done);
+            command.reset();
+        }
+        pump();
+    };
+    for (int i = 0; i < 3; ++i) {
+        cycle();
+    }
+    const auto before = alloc::count();
+    for (auto _ : state) {
+        cycle();
+    }
+    report(state, alloc::count() - before, map.view().bins().size());
+}
+
 BENCHMARK(BM_protocol_transaction)->Arg(0)->Arg(1600)->Arg(40000);
 BENCHMARK(BM_tcp_transaction)->Arg(0)->Arg(1600)->Arg(40000)->UseRealTime();
+BENCHMARK(BM_gem_cycle);
 
 } // namespace
 

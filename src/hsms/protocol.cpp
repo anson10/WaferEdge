@@ -528,6 +528,17 @@ std::expected<void, SendError> Protocol::reply(const Header& primary,
     return {};
 }
 
+std::expected<void, SendError> Protocol::abort(const Header& primary) {
+    if (state_ != State::selected) {
+        return std::unexpected(state_ == State::not_connected ? SendError::not_connected
+                                                              : SendError::not_selected);
+    }
+    write_frame(data_header(primary.session_id, primary.stream(), 0, false, primary.system_bytes),
+                {});
+    ++stats_.data_sent;
+    return {};
+}
+
 std::expected<void, SendError> Protocol::linktest(TimePoint now) {
     if (state_ == State::not_connected) {
         return std::unexpected(SendError::not_connected);

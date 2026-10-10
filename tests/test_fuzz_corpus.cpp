@@ -1,5 +1,6 @@
 // Replays every checked-in fuzz input through the fuzz target's body, so a crash the fuzzer
 // once found stays a regression test in every build (not only the fuzz preset).
+#include "gem_messages_target.hpp"
 #include "hsms_frames_target.hpp"
 #include "secs_item_target.hpp"
 
@@ -34,5 +35,10 @@ TEST_CASE("the SECS-II item fuzz corpus replays cleanly") {
 
 TEST_CASE("the HSMS framing fuzz corpus replays cleanly", "[hsms]") {
     CHECK(replay(WAFEREDGE_SOURCE_DIR "/fuzz/corpus/hsms_frames", waferedge::fuzz::hsms_frames) >
+          0);
+}
+
+TEST_CASE("the GEM fuzz corpus replays cleanly", "[gem]") {
+    CHECK(replay(WAFEREDGE_SOURCE_DIR "/fuzz/corpus/gem_messages", waferedge::fuzz::gem_messages) >
           0);
 }

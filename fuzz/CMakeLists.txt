@@ -1,12 +1,13 @@
 # The fuzz targets' bodies build in every configuration: the regression test replays the
 # checked-in corpus through them (tests/test_fuzz_corpus.cpp). The libFuzzer binaries need
 # Clang's -fsanitize=fuzzer: the fuzz preset only.
-add_library(waferedge_fuzz_targets STATIC hsms_frames_target.cpp secs_item_target.cpp)
+add_library(waferedge_fuzz_targets STATIC gem_messages_target.cpp hsms_frames_target.cpp
+                                          secs_item_target.cpp)
 target_include_directories(waferedge_fuzz_targets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(waferedge_fuzz_targets PUBLIC waferedge PRIVATE waferedge_options)
 
 if(WAFEREDGE_SANITIZE STREQUAL "fuzzer")
-  foreach(target secs-item hsms-frames)
+  foreach(target secs-item hsms-frames gem-messages)
     string(REPLACE "-" "_" source ${target})
     string(REPLACE "-" "_" corpus ${target})
     add_executable(fuzz-${target} fuzz_${source}.cpp)
