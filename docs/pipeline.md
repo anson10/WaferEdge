@@ -471,8 +471,78 @@ Per excursion it reports, in hours after the excursion began:
 Then the patterned wafers sorted before each, against all of them with no hold.
 `--sweep` reruns the hold rule for several k of W on the same verdicts.
 
-The results need the demo set and its ground truth from WaferLens (the laptop); they come
-from the commands under Reproduce.
+### On the laptop
+
+WaferLens's demo set: 24,090 wafers in 989 lots, 13 spatial excursions. Rules detector, hold
+after 3 of a lot's last 5 wafers, hold landing 5 ms after its wafer's sort (above
+bench-latency's p99.9). Hours after each excursion began, and that excursion's patterned
+wafers sorted before each event:
+
+| Id | Pattern | First sorted (WaferLens) | WaferEdge hold | WaferLens alarm | Sorted before hold | before alarm | no hold | Lots held |
+|---|---|---|---|---|---|---|---|---|
+| 6 | random | 21.2 (21) | 30.9 | 50 | 6 | 29 | 119 | 11 |
+| 12 | random | 37.7 (38) | 57.4 | 63 | 9 | 14 | 196 | 16 |
+| 13 | edge_loc | 34.0 (34) | 40.6 | 39 | 5 | 3 | 294 | 19 |
+| 14 | scratch | 51.3 (51) | 75.6 | 61 | 13 | 5 | 63 | 1 |
+| 18 | edge_ring | 44.9 (45) | 52.9 | 52 | 5 | 2 | 65 | 4 |
+| 19 | edge_loc | 46.8 (47) | 50.1 | 49 | 8 | 3 | 175 | 11 |
+| 22 | edge_loc | 28.9 (29) | 106.2 | 0 | 65 | 0 | 165 | 5 |
+| 24 | center | 71.5 (72) | 76.5 | 74 | 4 | 3 | 132 | 10 |
+| 27 | donut | 52.8 (53) | 55.5 | 56 | 3 | 3 | 141 | 11 |
+| 28 | center | 90.5 (91) | 93.7 | 94 | 3 | 3 | 83 | 5 |
+| 31 | loc | 34.3 (34) | 35.3 | 35 | 5 | 3 | 133 | 9 |
+| 32 | edge_ring | 48.4 (48) | 80.2 | 64 | 6 | 2 | 99 | 5 |
+| 36 | donut | 40.6 (41) | 61.6 | 43 | 15 | 2 | 226 | 13 |
+
+- **The data check passes:** every excursion's first patterned wafer reaches sort at the hour
+  WaferLens reports, to its rounding.
+- **All 13 held**, a median 57.4 h after the excursion began (WaferLens's alarm: 52.0 h).
+- **The in-line part, first patterned wafer at sort → hold, is slower than WaferLens's:**
+  8.1 h median against its 3.0 h. 147 patterned wafers were sorted before WaferEdge's holds,
+  72 before WaferLens's alarms, 1,891 with no hold at all. A negative result for the default
+  rule, kept.
+- 122 holds, 2 of them false (the triggering wafer shows no excursion); 1,771 of the 24,090
+  wafers withheld.
+- The smallest gap between a lot's sorted wafers is 0.1 s, so a 5 ms hold always lands before
+  the lot's next wafer: the replay is the live loop here.
+- The decision table (64 lots) evicted 925 lots: exactly 989 − 64, so every lot was inserted
+  once and none was forgotten while it was still being sorted.
+- Excursion 22 is the crediting difference from ADR-0017: WaferLens's alarm at 0 h is an
+  overlapping same-pattern excursion's alarm. WaferEdge only credits a hold to the excursion
+  its triggering wafer shows, which took 106 h.
+
+**Why 3 of 5 is slow.** The window is per lot, and an excursion's wafers are spread thinly
+across many lots: excursion 6's 119 wafers led to holds on 11 lots. Three patterned wafers
+among a lot's last five takes a while to happen. WaferLens's alarm counts the same pattern
+across all lots in 24 h, so it sees a thin spread sooner.
+
+The sweep (`--sweep`, same verdicts) shows the trade:
+
+| k of W | Excursions held | In-line h (median) | Patterned sorted before hold | Holds | False holds |
+|---|---|---|---|---|---|
+| 1 of 1 | 13 | 0.0 | 13 | 258 | 51 |
+| 2 of 2 | 13 | 4.8 | 50 | 147 | 1 |
+| 2 of 3 | 13 | 2.5 | 41 | 178 | 2 |
+| 2 of 5 | 13 | 2.5 | 37 | 194 | 2 |
+| 3 of 5 | 13 | 8.1 | 147 | 122 | 2 |
+| 3 of 8 | 13 | 8.1 | 102 | 154 | 2 |
+| 4 of 8 | 13 | 12.5 | 187 | 95 | 0 |
+
+- **2 of 5 (or 2 of 3) beats WaferLens's alarm:** 2.5 h median in-line against 3.0 h, 37
+  patterned wafers sorted before the holds against 72, with the same 2 false holds as 3 of 5.
+  The cost is more holds on excursion lots (194 against 122): lots an engineer has to release.
+- 1 of 1 holds on the first patterned wafer (13 wafers, 0 h) but 51 holds are false: every
+  misclassified wafer stops a lot.
+- 4 of 8 has no false holds and is the slowest.
+
+The default stays 3 of 5 in `waferedge-edge`, because these numbers come from one simulated
+demo set and choosing the rule on them would tune it to that set. A deployment would pick k
+and W from its own false-hold budget. A cross-lot rule (k wafers with the same signature on
+one tool within a time window, as WaferLens counts) would likely do better than either and
+is not implemented.
+
+Measured on the laptop (Ryzen 5 7535HS, WSL2); the replay is deterministic, so any machine
+gives the same table.
 
 ## Reproduce
 
