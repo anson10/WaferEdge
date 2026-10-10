@@ -1,9 +1,9 @@
 # SECS-II and HSMS
 
 How the tool emulator and the edge host talk: the equipment protocol stack fabs use, from the
-bytes up. This page covers what is implemented so far: the **SECS-II item codec** (code:
-`include/waferedge/secs/`, `src/secs/`; ADR-0009) and the **HSMS transport** (code:
-`include/waferedge/hsms/`, `src/hsms/`; ADR-0010). The GEM messages are added when they land.
+bytes up: the **SECS-II item codec** (code: `include/waferedge/secs/`, `src/secs/`;
+ADR-0009), the **HSMS transport** (`include/waferedge/hsms/`, `src/hsms/`; ADR-0010) and the
+**GEM subset** (`include/waferedge/gem/`, `src/gem/`; ADR-0011).
 
 SEMI E5 (SECS-II), E37 (HSMS) and E30 (GEM) are paid standards. This implementation works from
 public descriptions and open-source implementations (secsgem, secs4net), covers a subset, and
@@ -14,6 +14,7 @@ is not certified against the standards.
 ```
  GEM (E30)       which messages a tool must support and what they mean:
                  S1F13 establish communication, S6F11 event report, S2F41 host command, ...
+                 communication and control state machines             <- implemented (subset)
  SECS-II (E5)    the message body: one item, a self-describing tree    <- implemented
  HSMS (E37)      TCP: 4-byte length, 10-byte header (session, stream, function, system bytes)
                  select, linktest, timers                              <- implemented
@@ -312,12 +313,122 @@ kernel's loopback.
 Fuzzing, same container: 3 workers × 600 s, 34 M executions under ASan + UBSan, no crash;
 the minimising merge kept 213 inputs (56 KB).
 
+## GEM: what the messages mean
+
+GEM (SEMI E30) says which messages a tool serves and when. WaferEdge implements the subset
+its closed loop needs, as `gem::Equipment` (the tool emulator's side) and `gem::Host` (the
+edge host's side). Both are sans-I/O like `hsms::Protocol`: they take HSMS events and the
+time, send through a `gem::Link`, and report GEM events from `poll()`.
+
+### Communication state
+
+```
+ NOT COMMUNICATING --link selected: send S1F13--> WAIT CRA --S1F14 COMMACK 0--> COMMUNICATING
+        ^                                           | denied, S1F0, T3             |
+        |                                           v                              |
+        |                       WAIT DELAY --establish delay (10 s)--> S1F13 again |
+        +-------------------------------- HSMS link lost --------------------------+
+```
+
+Both sides send S1F13 when the HSMS link is selected; receiving one and answering COMMACK 0
+also establishes communication, so the two requests crossing is fine. Until then every
+other primary is answered with SxF0 (abort).
+
+### Control state (equipment)
+
+| State | Entered by | Serves |
+|---|---|---|
+| EQUIPMENT OFF-LINE | the operator (`go_offline`), the default at start | S1F13, S1F17 (refused: ONLACK 1); everything else SxF0 |
+| ATTEMPT ON-LINE | the operator (`go_online`): S1F1 sent | as off-line, until S1F2 (→ ON-LINE) or S1F0 / T3 (→ HOST OFF-LINE) |
+| HOST OFF-LINE | S1F15 from the host, a failed attempt | S1F13, S1F17 (accepted → ON-LINE) |
+| ON-LINE LOCAL | the operator's local/remote switch | everything below; S2F41 gets HCACK 2 "cannot do now" |
+| ON-LINE REMOTE | the switch | everything, and S2F41 HOLD / RELEASE reaches the app |
+
+The equipment sends S6F11 and S5F1 only ON-LINE, and S1F13 / S1F1 off-line.
+
+### Messages
+
+| Message | Direction | Body | WaferEdge's use |
+|---|---|---|---|
+| S1F1 / S1F2 | either | — / `<L [2] <A MDLN> <A SOFTREV>>` (host: `<L [0]>`) | are you there; the on-line attempt |
+| S1F13 / S1F14 | either | identity / `<L [2] <B COMMACK> identity>` | establish communication |
+| S1F15 / S1F16 | host → equipment | — / `<B OFLACK>` | request off-line |
+| S1F17 / S1F18 | host → equipment | — / `<B ONLACK>` (0 ok, 1 refused, 2 already) | request on-line |
+| S6F11 / S6F12 | equipment → host | see below / `<B ACKC6>` | the wafer report |
+| S5F1 / S5F2 | equipment → host | `<L [3] <B ALCD> <U4 ALID> <A ALTX>>` / `<B ACKC5>` | alarms (ALCD bit 7: set) |
+| S2F41 / S2F42 | host → equipment | `<L [2] <A RCMD> <L [n] <L [2] <A CPNAME> CPVAL>>>` / `<L [2] <B HCACK> <L [n] <L [2] <A CPNAME> <B CPACK>>>>` | HOLD / RELEASE with LOTID |
+| S9F3 / F5 / F7 / F9 | equipment → host | `<B MHEAD>`: the 10-byte header at fault | unknown stream / function, illegal data, T3 timeout |
+| SxF0 | either | — | abort: not communicating, or off-line |
+
+The wafer report, CEID 100 with the predefined report 10 (ADR-0011: no dynamic report
+definition, S2F33/35/37):
+
+```
+<L [3]
+  <U4 DATAID>                 a counter
+  <U4 CEID 100>               wafer sorted
+  <L [1]
+    <L [2]
+      <U4 RPTID 10>
+      <L [5]
+        <A LOTID> <U4 WAFERID> <U2 ROWS> <U2 COLS>
+        <U1 BINS...>          rows x cols bin codes, row-major: 0 off wafer, 1 pass, >= 2 fail
+      >
+    >
+  >
+>
+```
+
+ID items are read in any unsigned width (GEM lets a tool choose); `decode_wafer_report`
+returns the lot as a `string_view` and the map as a `WaferMapView` over the receive buffer.
+
+S2F41 HCACK, decided by the equipment unless noted: 1 unknown RCMD, 2 ON-LINE LOCAL, 3
+LOTID missing or not `<A>` (CPACK 3), and from the app: 0 done, 5 already in that condition,
+6 no such lot.
+
+### How GEM is tested
+
+- **Messages** (`tests/test_gem_messages.cpp`): the encoders write secsgem's bytes; the
+  decoders read them back as views; ids in any width; wrong shapes refused.
+- **State machines** (`tests/test_gem.cpp`, fake clock, Equipment and Host on two
+  `hsms::Protocol`s): communication from both sides, the operator putting the tool on-line,
+  a wafer report with its map, HOLD and its HCACK, every HCACK the equipment decides alone,
+  S9F3 / F5 / F7, off-line aborts, S1F15 / S1F17, WAIT DELAY after a denied or unanswered
+  S1F13 (at the delay and one tick before), S9F9 after T3 on a report, alarms, link loss.
+- **TCP** (`tests/test_gem_session.cpp`): communication, on-line, a wafer report and a HOLD
+  answered, end to end over two `hsms::Session`s.
+- **Allocations** (`tests/test_gem_alloc.cpp`): report, ack, hold and answer: 0 once warm.
+- **Fuzzing** (`fuzz/gem_messages_target.cpp`): arbitrary records fed to a communicating,
+  on-line Equipment and Host as primaries, replies to their own transactions, T3 timeouts
+  and lost links; everything they send back must be a valid SECS-II body.
+
+### GEM measurements
+
+`build/release/bench/bench-hsms --benchmark_filter=gem` (median of 3; Release, GCC 13.3), same
+4-thread cloud container as above, not the laptop. One cycle is the closed loop's protocol
+work without the network: the equipment encodes and sends a 40×40 wafer report, the host
+decodes it, acknowledges it and sends a HOLD, the equipment decodes the HOLD, the app answers
+it, and the host reads the HCACK. Four messages through both state machines and two HSMS
+engines.
+
+| Cycle | Time | Allocations |
+|---|---|---|
+| report + S6F12 + HOLD + S2F42, 40×40 map | 1.4 µs | 0 |
+
+Over TCP each of those messages adds a loopback trip (~7 µs per transaction above), so the
+protocol stack costs a few µs between a sorted wafer and its lot hold. Phase 4 measures the
+whole path, detectors included, under load.
+
+Fuzzing, same container: 3 workers × 600 s, 17 M executions under ASan + UBSan, no crash;
+the minimising merge kept 665 inputs (300 KB).
+
 ## Reproduce
 
 ```sh
 cmake --workflow --preset dev                       # all tests, codec included
 cmake --workflow --preset asan                      # the same under ASan + UBSan
 build/dev/tests/waferedge-tests "[hsms]"            # HSMS: fake-clock and TCP tests
+build/dev/tests/waferedge-tests "[gem]"             # GEM: messages, state machines, TCP
 build/dev/tests/waferedge-alloc-tests               # 0 allocations on the hot path
 cmake --workflow --preset release && build/release/bench/bench-secs
 build/release/bench/bench-hsms                      # transactions/s, round trips, allocations
@@ -333,11 +444,15 @@ build/fuzz/fuzz/fuzz-secs-item -merge=1 fuzz/corpus/secs_item /tmp/secs-corpus
 # The same for HSMS framing:
 mkdir -p /tmp/hsms-corpus
 build/fuzz/fuzz/fuzz-hsms-frames -max_total_time=600 /tmp/hsms-corpus fuzz/corpus/hsms_frames
+# and for the GEM layer:
+mkdir -p /tmp/gem-corpus
+build/fuzz/fuzz/fuzz-gem-messages -max_total_time=600 /tmp/gem-corpus fuzz/corpus/gem_messages
 ```
 
 New inputs go to the first directory given; the checked-in corpus is only read, except by
 `-merge=1`. A crash writes `crash-<sha1>` to the working directory: fix the bug and copy the
-file into `fuzz/corpus/secs_item` (or `hsms_frames`), which makes it a regression test.
+file into `fuzz/corpus/secs_item` (or `hsms_frames`, `gem_messages`), which makes it a
+regression test.
 
 The golden vectors came from secsgem in a throwaway virtualenv
 (`pip install secsgem==0.3.0`); e.g. `secsgem.secs.variables.String("LOT-1").encode()` gives

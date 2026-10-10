@@ -164,6 +164,9 @@ public:
                                                  std::span<const std::uint8_t> body, TimePoint now);
     // The reply to `primary`: function + 1, the same system bytes.
     std::expected<void, SendError> reply(const Header& primary, std::span<const std::uint8_t> body);
+    // SxF0, "abort transaction": the answer to a primary this side won't serve (GEM: not
+    // communicating, off-line). Header only, the same stream and system bytes.
+    std::expected<void, SendError> abort(const Header& primary);
 
     // Control transactions.
     std::expected<void, SendError> linktest(TimePoint now);

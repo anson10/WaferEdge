@@ -7,6 +7,10 @@ add_library(waferedge
   cnn_reference.cpp
   features.cpp
   features_avx2.cpp
+  gem/endpoint.cpp
+  gem/equipment.cpp
+  gem/host.cpp
+  gem/messages.cpp
   geometry.cpp
   hough.cpp
   machine.cpp

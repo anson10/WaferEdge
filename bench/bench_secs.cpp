@@ -3,11 +3,11 @@
 //
 //   build/release/bench/bench-secs
 //
-// Workloads: the wafer-map event report (tests/support/secs_messages.hpp) at the map sizes
+// Workloads: the wafer-map event report (gem::encode_wafer_report, docs/secs.md) at the map sizes
 // of the datasets, and the S2F41 HOLD the host sends back.
 #include "support/alloc_counter.hpp"
-#include "support/secs_messages.hpp"
 #include "support/synth.hpp"
+#include "waferedge/gem/messages.hpp"
 #include "waferedge/secs/encoder.hpp"
 #include "waferedge/secs/item.hpp"
 
@@ -25,7 +25,7 @@ std::vector<std::uint8_t> report_body(int n) {
     const WaferMap map = synth::random_map(n, n, 100, 1);
     std::vector<std::uint8_t> body;
     secs::Encoder e(body);
-    secs_messages::wafer_report(e, 1, "LOT-0042", 17, map);
+    gem::encode_wafer_report(e, 1, "LOT-0042", 17, map);
     return body;
 }
 
@@ -61,7 +61,7 @@ void BM_decode_report(benchmark::State& state) {
 void BM_read_report(benchmark::State& state) {
     const auto body = report_body(static_cast<int>(state.range(0)));
     run(state, body.size(), [&] {
-        auto report = secs_messages::read_wafer_report(body);
+        auto report = gem::decode_wafer_report(body);
         benchmark::DoNotOptimize(report);
     });
 }
@@ -73,7 +73,7 @@ void BM_encode_report(benchmark::State& state) {
     std::uint32_t data_id = 0;
     run(state, report_body(n).size(), [&] {
         secs::Encoder e(buffer);
-        secs_messages::wafer_report(e, ++data_id, "LOT-0042", 17, map);
+        gem::encode_wafer_report(e, ++data_id, "LOT-0042", 17, map);
         benchmark::DoNotOptimize(e.finish());
     });
 }

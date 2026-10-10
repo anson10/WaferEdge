@@ -167,22 +167,24 @@ The equipment protocol, from the bytes up.
       loopback round trip ~7 µs, 0 allocations per transaction)
 - [x] HSMS connection state machine as an explicit, tested type (`hsms::Protocol`, 21
       fake-clock tests: every timer at its deadline and one tick before)
-- [ ] GEM subset (SEMI E30): S1F1/F2 (are you there), S1F13/F14 (establish communication),
+- [x] GEM subset (SEMI E30): S1F1/F2 (are you there), S1F13/F14 (establish communication),
       S6F11/F12 (event report: carries the wafer map and lot/wafer ids), S5F1/F2 (alarm),
       S2F41/F42 (host command: HOLD / RELEASE lot); communication and control state machines
+      (also S1F15/F17, S9F3/F5/F7/F9 and SxF0; one predefined report, ADR-0011; sans-I/O
+      gem::Equipment / gem::Host over a Link; 0 allocations per report-and-hold cycle)
 - [x] Tests: round-trip properties (encode → decode is identity) on random item trees; golden
       byte vectors for known messages; timer behaviour with a fake clock
       (3,000 random trees, golden bytes from secsgem, HSMS timers on a fake clock, TCP tests
       on loopback)
 - [x] **Fuzzing**: libFuzzer target on the decoder (and HSMS framing), run in CI for a fixed
       time; corpus checked in; any crash becomes a regression test
-      (both targets with oracles, 60 s each in CI, corpora replayed by every build)
+      (codec, HSMS framing and GEM targets with oracles, 60 s each in CI, corpora replayed by
+      every build)
 - [x] Benchmark: messages/s decoded and encoded, allocation count per message (should be 0)
       (`bench-secs`, `bench-hsms`: 0 allocations per message, codec and TCP session)
-- [ ] `docs/secs.md`: the subset implemented, message layouts used, what is out of scope
-      (codec and HSMS written; GEM to come)
+- [x] `docs/secs.md`: the subset implemented, message layouts used, what is out of scope
 - [x] ADRs: zero-copy views and error handling; Asio coroutines for HSMS
-      (ADR-0009, ADR-0010)
+      (ADR-0009, ADR-0010; and ADR-0011 for the GEM subset)
 
 ## Phase 4 — The edge pipeline (3–4 days)
 

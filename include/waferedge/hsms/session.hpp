@@ -50,6 +50,7 @@ public:
                                                  bool reply_expected,
                                                  std::span<const std::uint8_t> body);
     std::expected<void, SendError> reply(const Header& primary, std::span<const std::uint8_t> body);
+    std::expected<void, SendError> abort(const Header& primary);
     // Sends Separate.req and closes the connection; the active side reconnects after T5.
     void separate();
     // Separates if connected, and ends run_active / run_passive.

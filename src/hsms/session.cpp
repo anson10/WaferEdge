@@ -186,6 +186,12 @@ std::expected<void, SendError> Session::reply(const Header& primary,
     return result;
 }
 
+std::expected<void, SendError> Session::abort(const Header& primary) {
+    auto result = protocol_.abort(primary);
+    wake_writer_.cancel();
+    return result;
+}
+
 void Session::separate() {
     protocol_.separate(now());
     drain();
