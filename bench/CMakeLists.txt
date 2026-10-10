@@ -1,3 +1,7 @@
+# Needs only the library's headers and threads.
+add_executable(bench-ring bench_ring.cpp)
+target_link_libraries(bench-ring PRIVATE waferedge waferedge_options Threads::Threads)
+
 # Synthetic maps come from the test support library.
 if(WAFEREDGE_TESTS)
   add_executable(bench-features bench_features.cpp)
