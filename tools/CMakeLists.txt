@@ -15,3 +15,6 @@ target_link_libraries(tool-emulator PRIVATE waferedge waferedge_options)
 
 add_executable(waferedge-edge edge_host.cpp)
 target_link_libraries(waferedge-edge PRIVATE waferedge waferedge_options)
+
+add_executable(waferedge-closedloop closed_loop.cpp)
+target_link_libraries(waferedge-closedloop PRIVATE waferedge waferedge_options)

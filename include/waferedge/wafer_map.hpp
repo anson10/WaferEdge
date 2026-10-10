@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -34,6 +35,8 @@ enum class Pattern : std::uint8_t {
 inline constexpr std::size_t kPatternCount = 9;
 
 [[nodiscard]] std::string_view pattern_name(Pattern p) noexcept;
+// The pattern pattern_name() calls `name` (WaferLens's simulator uses the same names).
+[[nodiscard]] std::optional<Pattern> pattern_from_name(std::string_view name) noexcept;
 
 // Which part of a dataset a map belongs to. Thresholds are fitted on train only.
 enum class Split : std::uint8_t { train = 0, val = 1, test = 2, unsplit = 3 };

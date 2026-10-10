@@ -159,6 +159,9 @@ the machine, and the design sketch. Read both before starting work.
   → decision and → HOLD at the tool, by load, from the emulator's schedule (ADR-0015);
   `--detector rules|cnn-cpu|rules-gpu|cnn-fp32|cnn-fp16|cnn-int8|A+B --batch B
   --deadline-us D` for the experiments (ADR-0016), accuracy against truth in the same run.
+- `build/release/tools/waferedge-closedloop data/waferlens_demo.wmap --excursions
+  data/waferlens_excursions.csv [--sweep]`: the closed-loop result against WaferLens's alarm
+  (ADR-0017); the CSV from `export_maps.py waferlens ... --excursions FILE`.
 - `build/release/bench/bench-ring`: the SPSC ring vs a mutex queue (throughput, median of 3;
   ping-pong round trip); `build/dev/tests/waferedge-tests "[ring]"`, and under the `tsan` preset.
 - `cmake --preset fuzz && cmake --build --preset fuzz`, then
