@@ -418,3 +418,16 @@ TEST_CASE("losing the link ends communication and a pending on-line attempt", "[
     CHECK(fab.equipment.communicating());
     CHECK(fab.tool.all<Communicating>().size() == 2);
 }
+
+TEST_CASE("a full HSMS transaction window is busy, not a dead link", "[gem]") {
+    Fab fab;
+    fab.online();
+    const WaferMap map(2, 2, 1);
+    for (std::size_t i = 0; i < hsms::kMaxOpenTransactions; ++i) {
+        REQUIRE(fab.equipment.report_wafer(fab.tool_link, "L", 1, map).has_value());
+    }
+    // 64 reports await S6F12: the next must wait for one, and the caller can tell.
+    CHECK(fab.equipment.report_wafer(fab.tool_link, "L", 1, map).error() == GemError::busy);
+    fab.pump(); // the host acknowledges them all
+    CHECK(fab.equipment.report_wafer(fab.tool_link, "L", 1, map).has_value());
+}

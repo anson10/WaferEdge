@@ -224,7 +224,7 @@ GemResult<std::uint32_t> Equipment::report_wafer(Link& link, std::string_view lo
     encode_wafer_report(e, next_data_id_++, lot, wafer, map);
     auto system = link.send(6, 11, true, body(e));
     if (!system) {
-        return std::unexpected(GemError::link);
+        return std::unexpected(gem_error(system.error()));
     }
     return *system;
 }
@@ -240,7 +240,7 @@ GemResult<std::uint32_t> Equipment::report_alarm(Link& link, const Alarm& alarm)
     encode_alarm(e, alarm);
     auto system = link.send(5, 1, true, body(e));
     if (!system) {
-        return std::unexpected(GemError::link);
+        return std::unexpected(gem_error(system.error()));
     }
     return *system;
 }

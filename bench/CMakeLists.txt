@@ -9,6 +9,9 @@ if(WAFEREDGE_TESTS)
   target_link_libraries(bench-secs PRIVATE waferedge waferedge_synth waferedge_alloc_counter
                         waferedge_options benchmark::benchmark)
 
+  add_executable(bench-emulator bench_emulator.cpp)
+  target_link_libraries(bench-emulator PRIVATE waferedge waferedge_synth waferedge_options)
+
   add_executable(bench-hsms bench_hsms.cpp)
   target_link_libraries(bench-hsms PRIVATE waferedge waferedge_synth waferedge_alloc_counter
                         waferedge_options benchmark::benchmark)

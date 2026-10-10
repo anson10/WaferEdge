@@ -22,9 +22,11 @@ add_executable(waferedge-tests
   test_map_file.cpp
   test_fuzz_corpus.cpp
   test_randomness.cpp
+  test_replay.cpp
   test_secs.cpp
   test_secs_roundtrip.cpp
-  test_thread_pool.cpp)
+  test_thread_pool.cpp
+  test_tool_emulator.cpp)
 target_link_libraries(waferedge-tests
   PRIVATE waferedge waferedge_synth waferedge_fuzz_targets waferedge_options
           Catch2::Catch2WithMain)

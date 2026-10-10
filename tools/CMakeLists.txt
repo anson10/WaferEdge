@@ -9,3 +9,6 @@ target_link_libraries(waferedge-classify PRIVATE waferedge waferedge_options)
 
 add_executable(waferedge-cnn waferedge_cnn.cpp)
 target_link_libraries(waferedge-cnn PRIVATE waferedge waferedge_options)
+
+add_executable(tool-emulator tool_emulator.cpp)
+target_link_libraries(tool-emulator PRIVATE waferedge waferedge_options)

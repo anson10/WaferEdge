@@ -189,8 +189,10 @@ The equipment protocol, from the bytes up.
 ## Phase 4 — The edge pipeline (3–4 days)
 
 Putting it together, closed loop, with honest tail latency.
-- [ ] **Tool emulator** (passive HSMS equipment): replays WaferLens maps in `tested_at` order
+- [x] **Tool emulator** (passive HSMS equipment): replays WaferLens maps in `tested_at` order
       as S6F11 events at a configurable rate, honours S2F41 HOLD (stops sending that lot)
+      (open-loop constant-rate schedule, ADR-0012; holds counted as withheld wafers; holds
+      200,000 wafers/s, lateness p50 20–120 µs; interoperates with secsgem's GEM host)
 - [ ] **Edge host**: network thread → **lock-free SPSC ring** → analytics thread(s) → decision
       thread → S2F41 back; cache-line aligned slots, no false sharing, optional thread pinning
 - [ ] Lock-free queue tests: TSan, a stress test with a checker, a benchmark against a mutex
@@ -207,6 +209,7 @@ Putting it together, closed loop, with honest tail latency.
 - [ ] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,
       against WaferLens's batch pattern alarm (median 52 h, mostly sort lag) and against no hold
 - [ ] `docs/pipeline.md` and an ADR (threading and queue design)
+      (docs/pipeline.md started: the emulator)
 
 ## Phase 5 — Python bindings and launch (2–3 days)
 

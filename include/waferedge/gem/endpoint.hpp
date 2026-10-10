@@ -103,7 +103,15 @@ using Event = std::variant<Communicating, NotCommunicating, ControlStateChanged,
                            TransactionFailed, ErrorReported, MalformedMessage>;
 
 // What the app's own requests can fail with.
-enum class GemError : std::uint8_t { not_communicating, offline, link };
+enum class GemError : std::uint8_t {
+    not_communicating,
+    offline,
+    busy, // HSMS has kMaxOpenTransactions primaries awaiting replies: retry after one arrives
+    link, // the HSMS link refused it (not selected, too long)
+};
+[[nodiscard]] constexpr GemError gem_error(SendError e) noexcept {
+    return e == SendError::too_many_open ? GemError::busy : GemError::link;
+}
 template <typename T>
 using GemResult = std::expected<T, GemError>;
 
