@@ -93,6 +93,9 @@ std::uint64_t ns(Clock::duration d) {
 
 std::string us(std::uint64_t v) {
     const double x = static_cast<double>(v) / 1e3;
+    if (x >= 1'000'000) {
+        return std::format("{:.2f} s", x / 1e6);
+    }
     if (x >= 1'000) {
         return std::format("{:.1f} ms", x / 1e3);
     }
@@ -333,7 +336,8 @@ int main(int argc, char** argv) {
                               r.rate, r.achieved, r.sent, r.dropped, us(r.total.percentile(0.5)),
                               us(r.total.percentile(0.99)), us(r.total.percentile(0.999)),
                               us(r.total.max()), r.holds_answered, r.holds,
-                              us(r.hold.percentile(0.5)), us(r.hold.max()))
+                              r.hold.count() == 0 ? "-" : us(r.hold.percentile(0.5)),
+                              r.hold.count() == 0 ? "-" : us(r.hold.max()))
                       .c_str());
         std::fflush(stdout);
         rows.push_back(r);

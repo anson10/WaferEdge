@@ -215,7 +215,9 @@ Putting it together, closed loop, with honest tail latency.
       omission is accounted for; p50 / p99 / p99.9 / max
       (`bench-latency`, ADR-0015: from the *scheduled* time, emulator and edge host in one
       process; `LatencyHistogram` within 1/128; container: decision p50 0.1–0.6 ms up to
-      20,000 wafers/s on one worker, ~32,000/s saturates it into counted drops)
+      20,000 wafers/s on one worker, ~32,000/s saturates it into counted drops; laptop:
+      p99 0.7–2.3 ms at 1,000–5,000/s, real WaferLens maps 10,000/s without drops, and an
+      intermittent 1.1–1.5 s whole-process stall under WSL2, cause still open)
 - [ ] Experiments: rules on CPU vs GPU vs the CNN (fp16 / int8), batch size / deadline, load
       (maps/s) vs tail latency
 - [ ] **Closed-loop result** on a WaferLens spatial excursion: wafers processed before the hold,

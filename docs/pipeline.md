@@ -320,6 +320,43 @@ What the numbers say:
 On real maps, `--maps data/waferlens_demo.wmap` replays the WaferLens demo set (24,090
 wafers, exported as in docs/data.md) instead of the synthetic ones.
 
+### On the laptop
+
+Ryzen 5 7535HS (6 cores / 12 threads), WSL2, release build, threads not pinned, same
+commands:
+
+| Maps | Wafers/s | Workers | Dropped | Decision p50 | p99 | p99.9 | HOLD p50 | Emulator late p99 |
+|---|---|---|---|---|---|---|---|---|
+| synthetic | 100 | 1 | 0 | 532 µs | **1.13 s** | 1.30 s | 717 µs | **1.12 s** |
+| synthetic | 1,000 | 1 | 0 | 338 µs | 680 µs | 1.4 ms | 487 µs | 188 µs |
+| synthetic | 5,000 | 1 | 0 | 258 µs | 2.3 ms | 10.7 ms | 379 µs | 226 µs |
+| synthetic | 10,000 | 1 | **12,866** | 299 µs | **1.48 s** | 1.48 s | 4.1 ms | **1.46 s** |
+| synthetic | 20,000 | 1 | 580 | 6.5 ms | 16.6 ms | 18.1 ms | 6.5 ms | 510 µs |
+| synthetic | 40,000 | 2 | 4,045 | 11.0 ms | 20.8 ms | 21.5 ms | 10.3 ms | 324 µs |
+| synthetic | 80,000 | 2 | 85,626 | 13.2 ms | 20.6 ms | 22.7 ms | 12.5 ms | 1.5 ms |
+| WaferLens demo | 100 | 1 | 0 | 528 µs | 1.1 ms | 3.6 ms | (no hold) | 356 µs |
+| WaferLens demo | 1,000 | 1 | 0 | 375 µs | 827 µs | 4.1 ms | 639 µs | 240 µs |
+| WaferLens demo | 10,000 | 1 | 0 | 309 µs | 15.2 ms | 16.1 ms | 532 µs | 208 µs |
+
+- **Two runs hit a stall of over a second, in the whole process.** In the bold rows the
+  emulator's *own* lateness has the same p99 as the total, and the HSMS window filled up
+  (64 reports unanswered; "window full" 9 and 4,383 times). The tool thread and the edge
+  host's network thread stopped together for 1.1–1.5 s, which points at the process or the
+  WSL2 VM being paused, not at the pipeline. At 10,000/s the open-loop schedule shows what
+  follows: ~14,000 overdue wafers go out at once, flood the rings, and 12,866 are dropped.
+  A closed-loop benchmark would have hidden the stall. The other rows of the same runs are
+  clean (1,000–5,000/s: p99 0.7–2.3 ms), so the stall is intermittent; its cause is still
+  open.
+- **Without the stalls the laptop is steadier than the container:** p99 of 0.7–2.3 ms at
+  1,000–5,000/s against 24–40 ms there, because the emulator's lateness stays below
+  0.25 ms at p99.
+- **Its worker saturates sooner:** about 20,000 synthetic maps/s for one worker (container:
+  ~32,000), and two workers already drop at 40,000/s. The workers were not pinned, so a
+  worker may share a core with the network or tool thread.
+- **Real WaferLens maps** hold 10,000 wafers/s on one worker without drops; the p99 of 15 ms
+  is the ring backing up near the worker's capacity. At 100/s the first 2,000 wafers in
+  `tested_at` order contain no excursion that trips 3 of 5, so no hold.
+
 ## Reproduce
 
 ```sh
