@@ -23,7 +23,22 @@ DecisionRule::Lot& DecisionRule::find_or_evict(const LotId& lot) noexcept {
     return *oldest;
 }
 
-std::optional<Pattern> DecisionRule::observe(const LotId& lot, Pattern pattern) noexcept {
+bool DecisionRule::tool_due(Pattern pattern, std::int64_t at_us) noexcept {
+    const auto k = static_cast<std::uint8_t>(config_.tool_k);
+    Arrivals& a = arrivals_[static_cast<std::size_t>(pattern) % kPatternCount];
+    a.at[a.next] = at_us;
+    a.next = static_cast<std::uint8_t>((a.next + 1) % k);
+    a.filled = std::min<std::uint8_t>(static_cast<std::uint8_t>(a.filled + 1), k);
+    // Full ring: `next` now points at the oldest of the last k arrivals.
+    return a.filled == k && at_us - a.at[a.next] <= config_.tool_window_us;
+}
+
+std::optional<Pattern> DecisionRule::observe(const LotId& lot, Pattern pattern,
+                                             std::int64_t at_us) noexcept {
+    const bool patterned = pattern != Pattern::none && pattern != Pattern::unknown;
+    // Counted for every lot, held or not: a held lot's wafers still say the excursion is on.
+    const bool tool = patterned && config_.tool_k > 0 && tool_due(pattern, at_us);
+
     Lot& l = find_or_evict(lot);
     l.last_seen = ++clock_;
     if (l.held) {
@@ -33,13 +48,15 @@ std::optional<Pattern> DecisionRule::observe(const LotId& lot, Pattern pattern) 
     l.recent[l.next] = pattern;
     l.next = static_cast<std::uint8_t>((l.next + 1) % window);
     l.filled = std::min<std::uint8_t>(static_cast<std::uint8_t>(l.filled + 1), window);
-    if (pattern == Pattern::none || pattern == Pattern::unknown) {
+    if (!patterned) {
         return std::nullopt;
     }
-    const auto same = std::count(l.recent.begin(), l.recent.begin() + l.filled, pattern);
-    if (same < config_.k) {
+    const bool in_lot =
+        std::count(l.recent.begin(), l.recent.begin() + l.filled, pattern) >= config_.k;
+    if (!in_lot && !tool) {
         return std::nullopt;
     }
+    tool_holds_ += in_lot ? 0U : 1U;
     l.held = true;
     return pattern;
 }

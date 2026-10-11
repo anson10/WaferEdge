@@ -141,6 +141,24 @@ TEST_CASE("closed loop: holds without an excursion are false holds", "[closedloo
     CHECK(r.wafers_withheld == 3 + 7);
 }
 
+TEST_CASE("closed loop: the cross-lot rule holds on sort time", "[closedloop]") {
+    // Lot 2's wafers 3, 5 and 6 are seen as center; with 2 such wafers from any lots within
+    // two minutes, wafer 5 (id 15, two minutes after wafer 3) completes it before 3 of 5 would.
+    const Scenario s;
+    ClosedLoopConfig config;
+    config.decision = {.k = 3, .window = 5, .lots = 8, .tool_k = 2, .tool_window_us = 2 * kMinute};
+    const auto r = replay_closed_loop(s.records, s.verdicts, s.truth, config);
+    CHECK(r.excursions[0].hold_us == 1000 * kMinute + 15 * kMinute + 5'000);
+    CHECK(r.excursions[0].sorted_before_hold == 3); // wafers 3, 4, 5
+    CHECK(r.tool_holds == 1);
+
+    config.decision.tool_window_us = kMinute; // wafers 3 and 5 are two minutes apart
+    const auto later = replay_closed_loop(s.records, s.verdicts, s.truth, config);
+    // Wafer 6 (5 and 6 within a minute) also completes 3 of 5: not a cross-lot-only hold.
+    CHECK(later.excursions[0].hold_us == 1000 * kMinute + 16 * kMinute + 5'000);
+    CHECK(later.tool_holds == 0);
+}
+
 TEST_CASE("closed loop: the replay withholds what the live loop withholds", "[closedloop][net]") {
     // The WaferLens sample, k = 1: the live run (emulator + edge host over TCP, one wafer per
     // 20 ms, holds landing in ~1 ms) against the replay of the same verdicts.

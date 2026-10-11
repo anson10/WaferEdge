@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <format>
 #include <optional>
@@ -61,11 +62,14 @@ int usage() {
         "usage: waferedge-edge [--host ADDR] [--port N] [--rules FILE] [--k N] [--window N]\n"
         "                      [--workers N] [--spin-us N] [--cpus NET,W1,W2,...]\n"
         "                      [--detector SPEC] [--batch B] [--deadline-us D]\n"
+        "                      [--tool-k K --tool-window-s S]\n"
         "                      [--model FILE] [--scales FILE] [--keep-running]\n"
         "  --host, --port  the tool to connect to (default 127.0.0.1:5000)\n"
         "  --rules         classifier thresholds (default config/rules.txt)\n"
         "  --k, --window   hold after k wafers of one lot with the same signature among its\n"
         "                  last `window` (default 3 of 5)\n"
+        "  --tool-k, --tool-window-s  also hold after K wafers with the same signature from\n"
+        "                  any lots arrived within S seconds (ADR-0018; default off)\n"
         "  --workers       analytics threads (default 1)\n"
         "  --spin-us       a worker's busy-wait before it sleeps (default 50)\n"
         "  --cpus          pin the network thread, then each worker, to these CPUs\n"
@@ -134,6 +138,12 @@ int main(int argc, char** argv) {
             ok = parse(value, config.edge.decision.k);
         } else if (arg == "--window") {
             ok = parse(value, config.edge.decision.window);
+        } else if (arg == "--tool-k") {
+            ok = parse(value, config.edge.decision.tool_k);
+        } else if (arg == "--tool-window-s") {
+            std::int64_t seconds = 0;
+            ok = parse(value, seconds) && seconds > 0;
+            config.edge.decision.tool_window_us = seconds * 1'000'000;
         } else if (arg == "--workers") {
             ok = parse(value, config.workers) && config.workers >= 1;
         } else if (arg == "--spin-us") {
@@ -162,7 +172,9 @@ int main(int argc, char** argv) {
         }
     }
     if (!DecisionRule::valid(config.edge.decision)) {
-        say(stderr, "waferedge-edge: need 1 <= k <= window <= {}", DecisionRule::kMaxWindow);
+        say(stderr,
+            "waferedge-edge: need 1 <= k <= window <= {}, and 1 <= tool-k <= {} with a window",
+            DecisionRule::kMaxWindow, DecisionRule::kMaxWindow);
         return 2;
     }
     if (cpus.size() > 1) {
@@ -204,10 +216,14 @@ int main(int argc, char** argv) {
         say(stderr, "waferedge-edge: could not pin the network thread to CPU {}", cpus.front());
     }
     say(stdout,
-        "waferedge-edge: tool {}:{}, hold after {} of {} wafers, detector {} (batch {}, "
+        "waferedge-edge: tool {}:{}, hold after {} of {} wafers{}, detector {} (batch {}, "
         "deadline {} us), {} worker(s)",
-        host, port, config.edge.decision.k, config.edge.decision.window, detector,
-        config.analyzer.batch, config.analyzer.deadline.count(), config.workers);
+        host, port, config.edge.decision.k, config.edge.decision.window,
+        config.edge.decision.tool_k == 0
+            ? std::string()
+            : std::format(" or {} from any lots within {} s", config.edge.decision.tool_k,
+                          config.edge.decision.tool_window_us / 1'000'000),
+        detector, config.analyzer.batch, config.analyzer.deadline.count(), config.workers);
 
     asio::io_context io(1);
     const auto start = Clock::now();

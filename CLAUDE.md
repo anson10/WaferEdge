@@ -161,7 +161,9 @@ the machine, and the design sketch. Read both before starting work.
   --deadline-us D` for the experiments (ADR-0016), accuracy against truth in the same run.
 - `build/release/tools/waferedge-closedloop data/waferlens_demo.wmap --excursions
   data/waferlens_excursions.csv [--sweep]`: the closed-loop result against WaferLens's alarm
-  (ADR-0017); the CSV from `export_maps.py waferlens ... --excursions FILE`.
+  (ADR-0017); the CSV from `export_maps.py waferlens ... --excursions FILE`. `--tool-k K
+  --tool-window-h H` adds the cross-lot rule (ADR-0018; `waferedge-edge --tool-k K
+  --tool-window-s S`), `--detector truth` replays the true patterns.
 - `build/release/bench/bench-ring`: the SPSC ring vs a mutex queue (throughput, median of 3;
   ping-pong round trip); `build/dev/tests/waferedge-tests "[ring]"`, and under the `tsan` preset.
 - `cmake --preset fuzz && cmake --build --preset fuzz`, then
