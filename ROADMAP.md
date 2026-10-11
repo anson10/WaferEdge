@@ -255,10 +255,10 @@ Putting it together, closed loop, with honest tail latency.
 - [x] README: the question, architecture, results tables (accuracy vs FabEye, CPU vs GPU
       throughput and crossover, decode rate, tail latency, closed-loop result), how to
       reproduce each, limitations (simulated data, GPU tests local only)
-- [ ] Release workflow (as in Path-Finding-Visualiser): tag `v1.0.0` → Linux build artifacts
+- [x] Release workflow (as in Path-Finding-Visualiser): tag `v1.0.0` → Linux build artifacts
       (and the Python wheel); release notes in `docs/release-notes/`
-      (`.github/workflows/release.yml` and `docs/release-notes/v1.0.0.md` ready; the tag waits
-      for the user)
+      (`.github/workflows/release.yml`; v1.0.0 released 2026-10-11 with the tools tarball, the
+      CPython 3.12 wheel and the sdist: github.com/anson10/WaferEdge/releases/tag/v1.0.0)
 - [ ] Website project page and CV line (the user's personal site: ~/personal-web-mig/ansonantony-v2)
 
 ## Phase 6 (stretch) — LLM incident note on the same engine (1–2 weeks)
