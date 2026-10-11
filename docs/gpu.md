@@ -403,8 +403,91 @@ the recorded batch at once.
 **With graphs the GPU passes the whole CPU from ~4 maps** (all three signatures: 32.6k maps/s
 against 30.7k), down from ~16; a single wafer is still faster on the CPU (71 µs vs 110 µs).
 
-## Next in phase 2a
+## Overlapping the CPU's packing with the GPU's work
 
-- Overlap the CPU packing of batch n+1 with the GPU work of batch n (two pinned buffers, two
-  streams): packing is 63% of a large batch's time, the biggest remaining cost before the
-  zero-copy receive path of phase 4. The Hough kernel's bank conflicts.
+At large batches the CPU packing the maps into pinned memory is the biggest step (63% of a
+features batch of 65,536, table above), and while the CPU packs, the GPU waits; while the GPU
+works, the CPU waits in `cudaStreamSynchronize`. With two sets of buffers the two can run
+at the same time: the CPU packs batch n+1 while the GPU copies and computes batch n.
+
+`SignatureEngine::submit` / `collect`: the engine has two **slots**, each with its own pinned
+upload and download buffers, device buffers and CUDA stream. `submit()` packs a batch into
+the free slot and enqueues its upload, kernels and download on that slot's stream, without
+waiting. `collect()` waits for the oldest batch's stream and copies its results out.
+
+```cpp
+engine.submit(batch[0]...);
+for (n = 1; n < N; ++n) {
+    engine.submit(batch[n]...); // packs n on the CPU while batch n - 1 runs on the GPU
+    engine.collect();           // waits for batch n - 1
+}
+engine.collect();
+```
+
+`run()` is `submit` then `collect`. What needed care:
+- **Each slot has its own streams and buffers**, so a batch never overwrites memory the other
+  is still copying. A slot's buffers grow only while it is free.
+- **Shared state** is the geometry tables (read only on the device) and the graph cache.
+  Growing the geometry buffer frees the old one, so it first waits for the batch in flight;
+  so does emptying a full graph cache (a graph may still be running on the other slot).
+  Each slot records its own CUDA Graphs (the buffer addresses are part of the key).
+- **Uploading a new geometry** is a synchronous copy, so it may wait behind the batch in
+  flight: rare (once per wafer shape), and correct either way.
+- **Two batches at most**: a third `submit()` without a `collect()` is an error, not a wait.
+
+The best it can do: per batch, max(pack, GPU) instead of pack + GPU. For the features at
+65,536 maps that is ~26 ms instead of ~39 ms (pack 26 ms, upload + kernel + download 13 ms),
+about 1.5× the throughput; for all three signatures, where the kernels take longer, the
+packing hides behind the GPU instead. Small batches gain little: their cost is the driver
+calls, which CUDA Graphs already cut.
+
+Tested (GPU-labelled): seven batches of mixed sizes and shapes, two in flight, a new shape
+while a batch runs, with and without graphs; every result equals the CPU; `run()` after
+`submit()` collects the earlier batch first; misuse (collect with nothing in flight, a third
+submit) is an error.
+
+**Measured** with `bench-gpu --benchmark_filter='BM_gpu_all_signatures_(graph|overlapped|overlapped_graph)/'`
+on the laptop: to be filled in from the first run.
+
+## Batching: latency against throughput
+
+A batch costs a fixed overhead (driver calls; ~110 µs with a CUDA Graph on WSL2) plus a
+part that grows with the number of maps. Bigger batches spread the overhead over more maps,
+so throughput rises, but every map in the batch waits for the whole batch, so latency rises
+too. From the tables above (all three signatures, 40×40, CUDA Graphs):
+
+| Batch | Throughput | Latency of the batch | |
+|---|---|---|---|
+| 1 | ~9k maps/s | 110 µs | overhead only |
+| 16 | ~137k maps/s | 117 µs | 16× the maps for 7% more time |
+| 64 | ~395k maps/s | 162 µs | |
+| 1,024 | ~0.9M maps/s | 1.13 ms | |
+| 65,536 | ~0.84M maps/s | 78 ms | saturated: latency only grows |
+
+So for a stream of wafers the batch should be as large as the arrival rate fills within the
+latency budget, and no larger:
+- **Below ~1,000 maps the GPU is overhead-bound**: a batch of 16 costs about what a batch of
+  1 costs. If wafers arrive faster than ~1 per 100 µs, batching them is free.
+- **Above ~1,000 maps it is throughput-bound**: doubling the batch doubles its latency and
+  adds nothing.
+- **A batch must close on a deadline as well as a size**, or a slow tool's wafers wait for
+  maps that don't come. ADR-0007 closes signature batches at 4,096 maps or 2 ms; the edge
+  host's detectors close at B maps or D µs from the oldest wafer (ADR-0016).
+
+In the edge pipeline (docs/pipeline.md, laptop) that trade-off measured end to end: at 100
+to 10,000 wafers/s, the GPU rules with batch 64 / 2 ms took 2.2–3.5 ms median sort →
+decision, almost all of it the deadline (a batch of 64 never filled at those rates), against
+0.3–0.5 ms for the rules on one CPU core. A tool sorts a wafer every few seconds to minutes,
+so at the edge the CPU wins; the GPU pays where maps arrive by the thousand per second
+(re-scoring history, many tools on one host), or for the CNN.
+
+## Reproduce the overlap
+
+```sh
+ctest --preset cuda -L gpu -R overlapped
+build/cuda/bench/bench-gpu \
+  --benchmark_filter='BM_gpu_all_signatures_(graph|overlapped|overlapped_graph)/' \
+  --benchmark_repetitions=3 --benchmark_report_aggregates_only=true
+```
+
+Still open: the Hough kernel's shared-memory bank conflicts (Kernel 3 above).

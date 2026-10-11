@@ -94,8 +94,10 @@ reference, profiled.
       (one thread per angle instead: no atomics; == CPU on all real maps; 26–84× one core)
 - [ ] Memory: pinned host buffers, device buffer pools, **CUDA streams** overlapping copy and
       compute, no `cudaMalloc` per batch
-      (pinned buffers, reused device buffers, no per-batch allocation, CUDA Graphs per batch shape:
-      done; overlapping packing of one batch with the GPU work of the previous: still open)
+      (pinned buffers, reused device buffers, no per-batch allocation, CUDA Graphs per batch shape;
+      overlapping packing with the GPU work of the previous batch: `SignatureEngine::submit` /
+      `collect`, two slots with their own buffers and streams, tested == CPU; the speed-up
+      still to be measured on the laptop)
 - [x] Tests (local, GPU-labelled): bit-for-bit equal features and equivalent labellings to the
       scalar reference on random batches
 - [x] Profiling with Nsight Compute / Systems: occupancy, memory throughput, a roofline-style
@@ -104,8 +106,10 @@ reference, profiled.
 - [x] Benchmark: throughput (maps/s) and latency per batch for CPU scalar, CPU AVX2 (all
       threads), GPU, across batch sizes 1 … 65,536; **find the crossover batch size**
       (all signatures: GPU passes the whole CPU at ~16 maps, ~9.4× at large batches)
-- [ ] `docs/gpu.md`: what each kernel does, the profile, the crossover, and the latency vs
+- [x] `docs/gpu.md`: what each kernel does, the profile, the crossover, and the latency vs
       throughput trade-off of batching
+      (overhead-bound below ~1,000 maps, throughput-bound above; batches close on size or
+      deadline; at the edge's wafer rates the CPU wins, docs/pipeline.md)
 - [x] ADR-0007: GPU batching strategy (fixed batch, deadline-based, or adaptive): placement by
       measured cost, batches close at 4,096 maps or a 2 ms deadline
 

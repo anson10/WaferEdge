@@ -18,6 +18,7 @@
 #include <benchmark/benchmark.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <vector>
 
@@ -215,6 +216,62 @@ void BM_gpu_clusters_graph(benchmark::State& state) {
     run_gpu_signatures(state, false, true);
 }
 
+// All three signatures, overlapped: the host packs batch n+1 (submit) while the GPU works on
+// batch n, then waits for batch n (collect). Two sets of outputs, one per batch in flight.
+// graphs: as above. Same maps every batch, so the number is comparable with the rows above.
+void run_gpu_overlapped(benchmark::State& state, bool graphs) {
+    if (!backend::Cuda::available()) {
+        state.SkipWithError("no CUDA device");
+        return;
+    }
+    const auto n = static_cast<std::size_t>(state.range(0));
+    const Geometry geometry(kSide, kSide);
+    const auto& all = maps();
+    const std::vector<WaferMapView> views(all.begin(),
+                                          all.begin() + static_cast<std::ptrdiff_t>(n));
+    const std::vector<const Geometry*> geometries(n, &geometry);
+    struct Out {
+        std::vector<Features> features;
+        std::vector<HoughLine> lines;
+        std::vector<ClusterSummary> clusters;
+    };
+    std::array<Out, 2> out;
+    for (auto& o : out) {
+        o = {std::vector<Features>(n), std::vector<HoughLine>(n), std::vector<ClusterSummary>(n)};
+    }
+    gpu::SignatureEngine engine;
+    engine.set_graphs(graphs);
+    const auto submit = [&](std::size_t which) {
+        auto& o = out[which % 2];
+        return engine.submit(views, geometries, o.features, o.lines, o.clusters);
+    };
+    // Warm-up: both slots once (each records its own graph), then one batch stays in flight.
+    if (!submit(0) || !submit(1) || !engine.collect() || !engine.collect() || !submit(0)) {
+        state.SkipWithError(engine.error().c_str());
+        return;
+    }
+    std::size_t next = 1;
+    for (auto _ : state) {
+        if (!submit(next++) || !engine.collect()) {
+            state.SkipWithError(engine.error().c_str());
+            return;
+        }
+    }
+    if (!engine.collect()) {
+        state.SkipWithError(engine.error().c_str());
+        return;
+    }
+    state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(n));
+}
+
+void BM_gpu_all_signatures_overlapped(benchmark::State& state) {
+    run_gpu_overlapped(state, false);
+}
+
+void BM_gpu_all_signatures_overlapped_graph(benchmark::State& state) {
+    run_gpu_overlapped(state, true);
+}
+
 // The whole CPU: a thread pool, ~4 chunks per thread (at most 64 maps a chunk) so small
 // batches still spread, per-thread Hough and cluster scratch. all_three = false: AVX2 features
 // only; true: features + Hough + clusters, the GPU's all-signatures workload.
@@ -294,6 +351,8 @@ BENCHMARK(BM_gpu_clusters)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_gpu_all_signatures)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_gpu_all_signatures_graph)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_gpu_clusters_graph)->Apply(batches)->UseRealTime();
+BENCHMARK(BM_gpu_all_signatures_overlapped)->Apply(batches)->UseRealTime();
+BENCHMARK(BM_gpu_all_signatures_overlapped_graph)->Apply(batches)->UseRealTime();
 BENCHMARK(BM_cpu_features_threads)->Apply([](auto* b) {
     cpu_batches(b, 65536);
 }) -> ArgNames({"batch", "threads", "spin_us"}) -> UseRealTime();
