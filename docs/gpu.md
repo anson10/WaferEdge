@@ -446,8 +446,43 @@ while a batch runs, with and without graphs; every result equals the CPU; `run()
 `submit()` collects the earlier batch first; misuse (collect with nothing in flight, a third
 submit) is an error.
 
-**Measured** with `bench-gpu --benchmark_filter='BM_gpu_all_signatures_(graph|overlapped|overlapped_graph)/'`
-on the laptop: to be filled in from the first run.
+### Measured
+
+Laptop, `cuda` preset (waferedge 1.0.0, GCC 13.4, driver / runtime 12.4), 40×40 maps, all
+three signatures, medians of 3 repetitions; time per batch in the steady state, so maps/s is
+the batch size over it. `graph` runs one batch at a time with a CUDA Graph (the previous
+section's best); `overlapped` keeps one batch in flight while the next is packed:
+
+| Batch | One at a time, graph | Overlapped | Overlapped, graph | Gain (graph → overlapped graph) |
+|---|---|---|---|---|
+| 1 | 154 µs (6.5k maps/s) | 168 µs | **89 µs** (11.3k) | 1.7× |
+| 16 | 121 µs (132k) | 178 µs | **87 µs** (184k) | 1.4× |
+| 64 | 165 µs (387k) | 201 µs | **97 µs** (660k) | 1.7× |
+| 256 | 363 µs (706k) | 347 µs | **286 µs** (895k) | 1.3× |
+| 1,024 | 1.29 ms (793k) | 1.09 ms | **1.00 ms** (1.02M) | 1.3× |
+| 4,096 | 5.40 ms (758k) | 4.27 ms | **3.90 ms** (1.05M) | 1.4× |
+| 16,384 | 22.8 ms (718k) | 15.0 ms | **15.3 ms** (1.07M) | 1.5× |
+| 65,536 | (unstable: 268–487 ms) | 56.2 ms | **56.1 ms** (1.17M) | |
+
+- **Large batches gain what the model predicted:** 1.5× at 16,384 maps, from ~720k to
+  ~1.07M maps/s; the packing now hides behind the GPU's copies and kernels. At 65,536 the
+  overlapped run gives 1.17M maps/s, against ~0.84M one batch at a time in the earlier run
+  (78 ms, the CUDA Graphs table above).
+- **Small batches gain too, for a different reason:** with one batch in flight, the next
+  batch's `cudaGraphLaunch` goes in while the previous one is still running, so the driver's
+  ~60 µs of CPU work per call on WSL2 overlaps the GPU's work instead of adding to it. A
+  batch of 1 to 64 maps costs ~90 µs instead of 120–165 µs.
+- **That is throughput, not latency.** Each batch still waits for its own upload, kernels
+  and download, and in the overlapped loop it is collected one iteration later. For a wafer
+  that has to be decided now, one batch at a time stays the lower-latency choice; overlap
+  pays when maps arrive faster than one batch's round trip (re-scoring history, many tools).
+- **Without graphs, small batches got slower** (168–201 µs against 121–165 µs one at a time
+  with a graph): each batch then makes five driver calls, and two streams interleave them.
+  Overlap and graphs belong together.
+- **The one-at-a-time 65,536 row was unstable** in this run (two passes: 268 and 487 ms,
+  CV 8–16%, against 78 ms in the earlier run), with the machine's load average at 4.3 right
+  after a full build. It isn't compared; the overlapped rows at that size were steady (CV
+  0.6–1.9%).
 
 ## Batching: latency against throughput
 

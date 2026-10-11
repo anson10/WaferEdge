@@ -79,7 +79,9 @@ end to end per batch ([docs/gpu.md](docs/gpu.md)):
 | 16,384 | 86.9k | 819k | |
 
 The GPU passes the whole CPU from ~16 maps a batch (~4 with CUDA Graphs) and is ~9× it at
-large batches. For the feature counts alone the whole CPU (5.4M maps/s) beats the GPU at
+large batches. Packing the next batch while the GPU works on this one (two buffer sets and
+streams) adds 1.3–1.7× throughput: ~1.07M maps/s at 16,384 maps, and ~90 µs per batch of
+1–64 maps with CUDA Graphs (`BM_gpu_all_signatures_overlapped_graph`). For the feature counts alone the whole CPU (5.4M maps/s) beats the GPU at
 every size: too little work per byte to pay for PCIe. Below ~1,000 maps a batch is all
 overhead, above it all throughput, so batches close on a size or a deadline (ADR-0007).
 
@@ -207,8 +209,6 @@ Run the loop by hand: `build/release/tools/tool-emulator data/waferlens_demo.wma
 - **A subset of SEMI E5 / E30 / E37**, from public descriptions; not certified. The edge host
   is the GEM host side and the emulator the equipment side; S5F1 alarms go from equipment to
   host, so the host doesn't raise them.
-- **Measured but not yet quoted**: the overlap of batch packing with GPU work
-  (`BM_gpu_all_signatures_overlapped`) awaits its laptop run (docs/gpu.md).
 
 ## Decisions and docs
 

@@ -92,12 +92,12 @@ reference, profiled.
       (atomicMin union-find; summary == CPU on all real maps; ~12× one core)
 - [x] Kernel 3: **Hough transform** voting with atomics, then a peak search
       (one thread per angle instead: no atomics; == CPU on all real maps; 26–84× one core)
-- [ ] Memory: pinned host buffers, device buffer pools, **CUDA streams** overlapping copy and
+- [x] Memory: pinned host buffers, device buffer pools, **CUDA streams** overlapping copy and
       compute, no `cudaMalloc` per batch
       (pinned buffers, reused device buffers, no per-batch allocation, CUDA Graphs per batch shape;
       overlapping packing with the GPU work of the previous batch: `SignatureEngine::submit` /
-      `collect`, two slots with their own buffers and streams, tested == CPU; the speed-up
-      still to be measured on the laptop)
+      `collect`, two slots with their own buffers and streams, tested == CPU; laptop: 1.5× at
+      16,384 maps, ~1.07M maps/s, and ~90 µs per batch of 1–64 maps with graphs)
 - [x] Tests (local, GPU-labelled): bit-for-bit equal features and equivalent labellings to the
       scalar reference on random batches
 - [x] Profiling with Nsight Compute / Systems: occupancy, memory throughput, a roofline-style
