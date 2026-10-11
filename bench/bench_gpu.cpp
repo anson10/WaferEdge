@@ -334,10 +334,14 @@ void cpu_batches(benchmark::internal::Benchmark* b, std::int64_t max_batch) {
 }
 
 void batches(benchmark::internal::Benchmark* b) {
-    for (std::int64_t n = 1; n <= static_cast<std::int64_t>(kMaxBatch); n *= 4) {
+    const auto max = static_cast<std::int64_t>(kMaxBatch);
+    std::int64_t n = 1;
+    for (; n <= max; n *= 4) {
         b->Arg(n);
     }
-    b->Arg(static_cast<std::int64_t>(kMaxBatch));
+    if (n / 4 != max) { // the largest batch, unless it was the last power of 4 already
+        b->Arg(max);
+    }
 }
 
 BENCHMARK(BM_cpu_avx2)->Apply(batches)->UseRealTime();
