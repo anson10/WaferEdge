@@ -202,8 +202,9 @@ PYBIND11_MODULE(_core, m) {
     }
     m.attr("SIGNALS") = signals;
 
-    m.def("backend", [] { return std::string(best_features_name()); },
-          "The feature backend this CPU runs: avx2 or scalar.");
+    m.def(
+        "backend", [] { return std::string(best_features_name()); },
+        "The feature backend this CPU runs: avx2 or scalar.");
 
     m.def(
         "features",
