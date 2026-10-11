@@ -192,7 +192,7 @@ ClosedLoopResult replay_closed_loop(std::span<const WaferRecord> records,
         last_sort[r.lot_id] = r.tested_at_us;
 
         const auto lot = LotId::from(emulator::lot_name(r.lot_id));
-        if (!lot || !rule.observe(*lot, verdicts[i])) {
+        if (!lot || !rule.observe(*lot, verdicts[i], r.tested_at_us)) {
             continue;
         }
         const std::int64_t lands = r.tested_at_us + config.latency_us;
@@ -217,6 +217,7 @@ ClosedLoopResult replay_closed_loop(std::span<const WaferRecord> records,
     }
     result.lots = last_sort.size();
     result.evictions = rule.evictions();
+    result.tool_holds = rule.tool_holds();
     return result;
 }
 

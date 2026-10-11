@@ -118,6 +118,47 @@ TEST_CASE("decision: config validation", "[decision]") {
     CHECK_FALSE(DecisionRule::valid({.k = 1, .window = 1, .lots = 0}));
 }
 
+TEST_CASE("decision: across lots, K same-pattern wafers within the time window", "[decision]") {
+    // The per-lot rule alone would never fire here (one patterned wafer per lot).
+    DecisionRule rule({.k = 3, .window = 5, .lots = 8, .tool_k = 3, .tool_window_us = 100});
+    CHECK_FALSE(rule.observe(lot("A"), P::donut, 0));
+    CHECK_FALSE(rule.observe(lot("B"), P::none, 10));
+    CHECK_FALSE(rule.observe(lot("B"), P::donut, 20));
+    CHECK_FALSE(rule.observe(lot("C"), P::scratch, 30));      // another pattern doesn't add up
+    CHECK(rule.observe(lot("C"), P::donut, 100) == P::donut); // 0, 20, 100: within 100
+    CHECK(rule.held(lot("C")));
+    CHECK_FALSE(rule.held(lot("A")));
+    CHECK(rule.tool_holds() == 1);
+    // Still on: the next lot that shows the pattern is held on its first patterned wafer.
+    CHECK(rule.observe(lot("D"), P::donut, 110) == P::donut); // 20, 100, 110
+    CHECK(rule.tool_holds() == 2);
+}
+
+TEST_CASE("decision: across lots, the window is in time and slides", "[decision]") {
+    DecisionRule rule({.k = 5, .window = 5, .lots = 8, .tool_k = 2, .tool_window_us = 50});
+    CHECK_FALSE(rule.observe(lot("A"), P::loc, 0));
+    CHECK_FALSE(rule.observe(lot("B"), P::loc, 51));      // 51 after the first: outside
+    CHECK(rule.observe(lot("C"), P::loc, 101) == P::loc); // 51 and 101: inside
+}
+
+TEST_CASE("decision: across lots, a held lot's wafers still count", "[decision]") {
+    DecisionRule rule({.k = 1, .window = 1, .lots = 8, .tool_k = 3, .tool_window_us = 1000});
+    CHECK(rule.observe(lot("A"), P::center, 0) == P::center); // the per-lot rule
+    CHECK_FALSE(rule.observe(lot("A"), P::center, 1));        // held: counted, no second hold
+    CHECK(rule.observe(lot("B"), P::center, 2) == P::center);
+    CHECK(rule.tool_holds() == 0); // B's own per-lot rule (1 of 1) fired too
+}
+
+TEST_CASE("decision: the cross-lot rule's config", "[decision]") {
+    CHECK(DecisionRule::valid({.k = 1, .window = 1, .lots = 1, .tool_k = 2, .tool_window_us = 1}));
+    CHECK_FALSE(
+        DecisionRule::valid({.k = 1, .window = 1, .lots = 1, .tool_k = 2, .tool_window_us = 0}));
+    CHECK_FALSE(
+        DecisionRule::valid({.k = 1, .window = 1, .lots = 1, .tool_k = 33, .tool_window_us = 1}));
+    CHECK_FALSE(
+        DecisionRule::valid({.k = 1, .window = 1, .lots = 1, .tool_k = -1, .tool_window_us = 1}));
+}
+
 TEST_CASE("lot ids: up to 32 characters, compared by value", "[decision]") {
     CHECK(LotId::from(std::string(32, 'x')).has_value());
     CHECK_FALSE(LotId::from(std::string(33, 'x')).has_value());

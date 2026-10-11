@@ -75,7 +75,8 @@ struct ClosedLoopResult {
     std::size_t holds = 0;
     std::size_t false_holds = 0; // triggered by a wafer that shows no excursion
     std::size_t lots = 0;
-    std::uint64_t evictions = 0; // lots the decision table forgot
+    std::uint64_t evictions = 0;  // lots the decision table forgot
+    std::uint64_t tool_holds = 0; // holds only the cross-lot rule made
     // The smallest gap between two consecutive sorted wafers of one lot: the replay equals
     // the live loop while the latency stays below it.
     std::optional<std::int64_t> min_lot_gap_us;

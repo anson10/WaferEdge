@@ -537,12 +537,46 @@ The sweep (`--sweep`, same verdicts) shows the trade:
 
 The default stays 3 of 5 in `waferedge-edge`, because these numbers come from one simulated
 demo set and choosing the rule on them would tune it to that set. A deployment would pick k
-and W from its own false-hold budget. A cross-lot rule (k wafers with the same signature on
-one tool within a time window, as WaferLens counts) would likely do better than either and
-is not implemented.
+and W from its own false-hold budget. A rule that counts across lots, as WaferLens does, is
+the next section.
 
 Measured on the laptop (Ryzen 5 7535HS, WSL2); the replay is deterministic, so any machine
 gives the same table.
+
+### Counting across lots (ADR-0018)
+
+The per-lot window is slow because an excursion's wafers are spread over many lots. An
+optional second rule counts across lots: hold a lot whose wafer shows a pattern once K wafers
+with that pattern, from any lots, arrived within H hours (`--tool-k K --tool-window-h H`;
+`waferedge-edge --tool-k K --tool-window-s S` live). `--detector truth` replays the true
+patterns: a perfect detector, which separates the rule's cost from the detector's misses.
+
+| Detector | Rule | In-line h (median) | Patterned sorted before hold | Holds | False holds | Wafers withheld |
+|---|---|---|---|---|---|---|
+| rules | 3 of 5 (default) | 8.1 | 147 | 122 | 2 | 1,771 |
+| rules | 2 of 5 | 2.5 | 37 | 194 | 2 | 3,197 |
+| rules | 3 of 5, or 3 in 24 h | 5.3 | 43 | 211 | 5 | 3,993 |
+| rules | 2 of 5, or 3 in 24 h | 2.0 | 31 | 211 | 5 | 4,076 |
+| rules | 2 of 5, or 2 in 12 h | 2.0 | 27 | 217 | 11 | 4,120 |
+| truth | 3 of 5 | 4.6 | 62 | 147 | 0 | 2,292 |
+| truth | 3 of 5, or 3 in 24 h | 3.2 | 39 | 206 | 0 | 4,057 |
+| truth | 2 of 5, or 3 in 24 h | 2.0 | 29 | 206 | 0 | 4,114 |
+| WaferLens's alarm | ≥ 3 in 24 h, all lots | 3.0 | 72 | – | – | – |
+
+All rows hold 13 of 13 excursions.
+- **Counting across lots is most of the gap at k = 3:** with the true patterns, 3 in 24 h
+  gets to 3.2 h, close to WaferLens's 3.0 h with the same kind of rule; the per-lot 3 of 5
+  needs 4.6 h.
+- **The detector's misses cost the rest:** with the rules detector the same rule needs 5.3 h.
+  A wafer the detector calls `none` doesn't count.
+- **2 of 5, or 3 in 24 h, holds sooner than WaferLens's alarm**: 2.0 h against 3.0 h, 31
+  patterned wafers sorted before the holds against 72. It costs 5 false holds instead of 2,
+  and 211 held lots instead of 122. Below 3 in 24 h, false holds grow fast (2 in 12 h: 11).
+- The full K × H table is in `--sweep`'s output.
+
+The defaults stay 3 of 5 with the cross-lot rule off: these are one simulated fab's numbers,
+and choosing the rule on them would tune it to that fab. The replay is deterministic: the
+cloud container (4 threads, no GPU) and the laptop give the same tables.
 
 ## Reproduce
 
@@ -565,6 +599,10 @@ python3 tools/export_maps.py waferlens ~/waferLens/data/demo data/waferlens_demo
     --excursions data/waferlens_excursions.csv
 build/release/tools/waferedge-closedloop data/waferlens_demo.wmap \
     --excursions data/waferlens_excursions.csv --sweep
+build/release/tools/waferedge-closedloop data/waferlens_demo.wmap \
+    --excursions data/waferlens_excursions.csv --k 2 --window 5 --tool-k 3 --tool-window-h 24
+build/release/tools/waferedge-closedloop data/waferlens_demo.wmap \
+    --excursions data/waferlens_excursions.csv --detector truth --sweep
 # On the laptop, cuda build and FabEye's model (tools/export_cnn.py --out data):
 ctest --preset cuda -L gpu -R "rules-gpu|cnn-fp32"  # rules-gpu == rules, cnn-fp32 vs cnn-cpu
 build/cuda/bench/bench-latency --maps data/waferlens_demo.wmap --rates 100,1000 --detector cnn-cpu

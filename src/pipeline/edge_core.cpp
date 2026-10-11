@@ -1,6 +1,7 @@
 #include "waferedge/pipeline/edge_core.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <format>
 #include <ranges>
@@ -121,7 +122,10 @@ void EdgeCore::decide(const Verdict& verdict, gem::Link& link) {
     if (observer_) {
         observer_(verdict, Clock::now());
     }
-    const auto pattern = decision_.observe(verdict.lot, verdict.pattern);
+    const auto at_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(verdict.received.time_since_epoch())
+            .count();
+    const auto pattern = decision_.observe(verdict.lot, verdict.pattern, at_us);
     if (!pattern) {
         return;
     }

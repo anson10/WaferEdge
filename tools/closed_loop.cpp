@@ -17,6 +17,7 @@
 #include <charconv>
 #include <cstdio>
 #include <cstdlib>
+#include <expected>
 #include <format>
 #include <optional>
 #include <string>
@@ -34,6 +35,14 @@ bool parse(std::string_view text, T& out) {
     return ec == std::errc{} && end == text.data() + text.size();
 }
 
+// libc++ 18 has no floating-point from_chars.
+bool parse(std::string_view text, double& out) {
+    const std::string copy(text);
+    char* end = nullptr;
+    out = std::strtod(copy.c_str(), &end);
+    return !copy.empty() && end == copy.c_str() + copy.size();
+}
+
 // std::println is GCC 14 (libc++ 18 has it, so this can't share its name).
 template <typename... Args>
 void say(std::format_string<Args...> fmt, Args&&... args) {
@@ -45,14 +54,18 @@ int usage() {
     std::fputs(
         "usage: waferedge-closedloop <maps.wmap> --excursions FILE [--alarms FILE]\n"
         "                            [--detector SPEC] [--k K] [--window W] [--latency-us N]\n"
+        "                            [--tool-k K --tool-window-h H]\n"
         "                            [--model FILE] [--scales FILE] [--sweep]\n"
         "  --excursions  tools/export_maps.py waferlens ... --excursions FILE\n"
         "  --alarms      WaferLens's published alarm times (default\n"
         "                config/waferlens_pattern_alarms.csv)\n"
-        "  --detector    as waferedge-edge (default rules)\n"
+        "  --detector    as waferedge-edge (default rules), or truth: the true patterns\n"
         "  --k, --window hold after k of a lot's last `window` wafers (default 3 of 5)\n"
+        "  --tool-k, --tool-window-h\n"
+        "                also hold after K same-pattern wafers from any lots within H hours\n"
+        "                (ADR-0018; default off)\n"
         "  --latency-us  sort -> HOLD at the tool (default 5000, above bench-latency's p99.9)\n"
-        "  --sweep       also a table over several k / window\n",
+        "  --sweep       also tables over several k / window, and the cross-lot rule\n",
         stderr);
     return 2;
 }
@@ -141,6 +154,12 @@ int main(int argc, char** argv) {
             ok = parse(value, config.decision.k);
         } else if (arg == "--window") {
             ok = parse(value, config.decision.window);
+        } else if (arg == "--tool-k") {
+            ok = parse(value, config.decision.tool_k);
+        } else if (arg == "--tool-window-h") {
+            double h = 0;
+            ok = parse(value, h) && h > 0;
+            config.decision.tool_window_us = static_cast<std::int64_t>(h * kHour);
         } else if (arg == "--latency-us") {
             ok = parse(value, config.latency_us) && config.latency_us >= 0;
         } else {
@@ -187,20 +206,36 @@ int main(int argc, char** argv) {
             resources.int8_max = gpu::read_activation_max(scales_path);
         }
     }
-    const auto factory = detector_factory(detector, resources);
-    if (!factory) {
-        return fail(factory.error());
+    // `truth`: every wafer's true pattern, a perfect detector. It separates what the hold rule
+    // costs from what the detector's misses cost.
+    std::expected<std::vector<Pattern>, std::string> verdicts;
+    if (detector == "truth") {
+        verdicts.emplace();
+        verdicts->reserve(set->size());
+        for (const auto& rec : set->records()) {
+            verdicts->push_back(rec.truth);
+        }
+    } else {
+        const auto factory = detector_factory(detector, resources);
+        if (!factory) {
+            return fail(factory.error());
+        }
+        verdicts = classify_all(set->records(), *(*factory)());
     }
-    const auto verdicts = classify_all(set->records(), *(*factory)());
     if (!verdicts) {
         return fail(verdicts.error());
     }
     const auto r = replay_closed_loop(set->records(), *verdicts, *truth, config);
 
-    say("{}: {} wafers in {} lots, {} spatial excursions; detector {}, hold after {} of {}, "
+    const std::string tool_rule =
+        config.decision.tool_k == 0
+            ? std::string()
+            : std::format(" or {} from any lots within {} h", config.decision.tool_k,
+                          static_cast<double>(config.decision.tool_window_us) / kHour);
+    say("{}: {} wafers in {} lots, {} spatial excursions; detector {}, hold after {} of {}{}, "
         "hold lands {} ms after its wafer's sort",
         maps_path, set->size(), r.lots, truth->excursions.size(), detector, config.decision.k,
-        config.decision.window, static_cast<double>(config.latency_us) / 1e3);
+        config.decision.window, tool_rule, static_cast<double>(config.latency_us) / 1e3);
     say("");
     say("Hours after each excursion began, and its patterned wafers sorted before each:");
     say("");
@@ -263,6 +298,9 @@ int main(int argc, char** argv) {
             static_cast<double>(config.latency_us) / 1e3);
     }
     say("Lots forgotten by the decision table: {}.", r.evictions);
+    if (config.decision.tool_k > 0) {
+        say("Holds only the cross-lot rule made: {} of {}.", r.tool_holds, r.holds);
+    }
 
     if (sweep) {
         say("");
@@ -281,6 +319,26 @@ int main(int argc, char** argv) {
             say("| {} of {} | {} of {} | {} | {} of {} | {} | {} |", k, w, ss.held,
                 rr.excursions.size(), hours(ss.inline_h), ss.before_hold, ss.total, ss.holds,
                 ss.false_holds);
+        }
+        say("");
+        say("The cross-lot rule on top of {} of {} (K same-pattern wafers from any lots within "
+            "H hours):",
+            config.decision.k, config.decision.window);
+        say("");
+        say("| K in H | Excursions held | In-line h (median) | Patterned sorted before hold | "
+            "Holds | False holds | Cross-lot holds |");
+        say("|---|---|---|---|---|---|---|");
+        for (const int k : {2, 3, 4, 5}) {
+            for (const int h : {6, 12, 24}) {
+                ClosedLoopConfig c = config;
+                c.decision.tool_k = k;
+                c.decision.tool_window_us = static_cast<std::int64_t>(h * kHour);
+                const auto rr = replay_closed_loop(set->records(), *verdicts, *truth, c);
+                const Summary ss = summarise(rr, *truth);
+                say("| {} in {} h | {} of {} | {} | {} of {} | {} | {} | {} |", k, h, ss.held,
+                    rr.excursions.size(), hours(ss.inline_h), ss.before_hold, ss.total, ss.holds,
+                    ss.false_holds, rr.tool_holds);
+            }
         }
     }
     return 0;

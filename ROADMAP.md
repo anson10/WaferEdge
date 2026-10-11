@@ -231,6 +231,10 @@ Putting it together, closed loop, with honest tail latency.
       default 3 of 5 is slower than WaferLens after the first patterned wafer reaches sort,
       8.1 h vs 3.0 h median, 147 vs 72 patterned wafers sorted first, of 1,891; 2 of 5 is
       faster, 2.5 h and 37 wafers, 2 false holds; 1 of 1 gives 51 false holds)
+- [x] Follow-up: a cross-lot hold rule, K same-pattern wafers from any lots within H hours
+      (ADR-0018, off by default: 2 of 5 or 3 in 24 h holds after 2.0 h with 31 wafers sorted,
+      5 false holds; with the true patterns 3 in 24 h matches WaferLens's 3.2 vs 3.0 h, so the
+      rest of the gap is the detector's misses)
 - [x] `docs/pipeline.md` and an ADR (threading and queue design)
       (docs/pipeline.md: the emulator, the ring, the edge host, latency, experiments, the closed
       loop; ADR-0012 to ADR-0017)
