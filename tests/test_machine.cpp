@@ -2,11 +2,16 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+
 using namespace waferedge;
 
 TEST_CASE("build info names the version, compiler and standard") {
     const auto build = build_info();
-    CHECK(build.version == "0.1.0");
+    // CMakeLists.txt's project version, major.minor.patch.
+    CHECK(std::ranges::count(build.version, '.') == 2);
+    CHECK(std::ranges::all_of(build.version,
+                              [](char c) { return c == '.' || (c >= '0' && c <= '9'); }));
     CHECK_FALSE(build.compiler.empty());
     CHECK_FALSE(build.build_type.empty());
     // GCC 13 reports 202100L for -std=c++23, later compilers 202302L.

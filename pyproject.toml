@@ -1,0 +1,44 @@
+# The Python wheel (phase 5): the CPU signatures, the rule classifier and the clusters as
+# waferedge._core, built from the CMake project by scikit-build-core (docs/python.md).
+#   CXX=g++-13 pip install .        # GCC 13 or Clang 18: the library is C++23
+#   pytest python/tests
+
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "waferedge"
+dynamic = ["version"]
+description = "Wafer-map signatures, a rule classifier and clusters in C++23, on NumPy arrays"
+readme = "docs/python.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/anson10/WaferEdge"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+wheel.packages = ["python/waferedge"]
+cmake.build-type = "Release"
+sdist.exclude = ["build", "data", ".github"]
+
+[tool.scikit-build.cmake.define]
+WAFEREDGE_PYTHON = "ON"
+WAFEREDGE_TESTS = "OFF"
+WAFEREDGE_BENCH = "OFF"
+WAFEREDGE_TOOLS = "OFF"
+WAFEREDGE_WARNINGS_AS_ERRORS = "OFF"
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = 'project\(waferedge VERSION (?P<value>[0-9.]+)'
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

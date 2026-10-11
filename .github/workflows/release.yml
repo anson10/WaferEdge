@@ -1,0 +1,55 @@
+name: release
+
+# A tag v<version> builds and tests the release preset, packs the command-line tools, builds
+# the Python wheel and the sdist, and publishes a GitHub release with
+# docs/release-notes/v<version>.md as its notes. The tag must match CMakeLists.txt's version.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: The tag matches the project version, and has release notes
+        run: |
+          version=$(sed -n 's/^project(waferedge VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, CMake $version"; exit 1; }
+          test -f "docs/release-notes/$GITHUB_REF_NAME.md"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build and test (release preset)
+        run: cmake --workflow --preset release
+      - name: Pack the tools
+        run: |
+          name="waferedge-$VERSION-linux-x86_64"
+          mkdir -p "dist/$name/bin" "dist/$name/config"
+          for tool in waferedge-info waferedge-maps waferedge-classify waferedge-cnn \
+                      tool-emulator waferedge-edge waferedge-closedloop; do
+            cp "build/release/tools/$tool" "dist/$name/bin/"
+          done
+          cp config/* "dist/$name/config/"
+          cp README.md LICENSE "dist/$name/"
+          build/release/tools/waferedge-info > "dist/$name/BUILD-INFO.txt"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -r "dist/$name"
+      - name: Build the wheel and the sdist, and test the wheel
+        run: |
+          python -m pip install build
+          CXX=g++-13 CC=gcc-13 python -m build --outdir dist
+          python -m pip install pytest dist/*.whl
+          pytest python/tests
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --title "WaferEdge $VERSION"
+          --notes-file "docs/release-notes/$GITHUB_REF_NAME.md"

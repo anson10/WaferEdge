@@ -245,15 +245,20 @@ Putting it together, closed loop, with honest tail latency.
 
 ## Phase 5 — Python bindings and launch (2–3 days)
 
-- [ ] pybind11 module: features, classifier and clustering on NumPy arrays (zero-copy buffer
+- [x] pybind11 module: features, classifier and clustering on NumPy arrays (zero-copy buffer
       protocol); wheel via scikit-build-core; tested from pytest
-- [ ] Optional: a WaferLens-side script comparing WaferEdge's rule-based patterns with FabEye's
+      (`waferedge._core`, ADR-0019: uint8 C-contiguous maps read in place, anything else is a
+      TypeError; batches release the GIL; docs/python.md; CI builds the wheel and runs pytest)
+- [x] Optional: a WaferLens-side script comparing WaferEdge's rule-based patterns with FabEye's
       CNN on the same wafers (lives in WaferEdge, reads WaferLens data; WaferLens unchanged)
-- [ ] README: the question, architecture, results tables (accuracy vs FabEye, CPU vs GPU
+      (`tools/evaluate.py`: rules vs FabEye's CNN vs trivial on every WaferLens map)
+- [x] README: the question, architecture, results tables (accuracy vs FabEye, CPU vs GPU
       throughput and crossover, decode rate, tail latency, closed-loop result), how to
       reproduce each, limitations (simulated data, GPU tests local only)
 - [ ] Release workflow (as in Path-Finding-Visualiser): tag `v1.0.0` → Linux build artifacts
       (and the Python wheel); release notes in `docs/release-notes/`
+      (`.github/workflows/release.yml` and `docs/release-notes/v1.0.0.md` ready; the tag waits
+      for the user)
 - [ ] Website project page and CV line (the user's personal site: ~/personal-web-mig/ansonantony-v2)
 
 ## Phase 6 (stretch) — LLM incident note on the same engine (1–2 weeks)
