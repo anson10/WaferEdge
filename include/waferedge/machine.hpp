@@ -9,7 +9,7 @@
 namespace waferedge {
 
 struct BuildInfo {
-    std::string version;    // project version, e.g. "0.1.0"
+    std::string version;    // project version, e.g. "1.0.0"
     std::string compiler;   // e.g. "gcc 13.1.0"
     std::string build_type; // CMAKE_BUILD_TYPE
     long cxx_standard;      // __cplusplus of the host code

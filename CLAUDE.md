@@ -168,6 +168,11 @@ the machine, and the design sketch. Read both before starting work.
   `build/fuzz/fuzz/fuzz-secs-item -max_total_time=60 /tmp/secs-corpus fuzz/corpus/secs_item`
   (or `fuzz-hsms-frames`, `fuzz-gem-messages` with their corpora): the SECS-II decoder,
   HSMS framing and the GEM layer under libFuzzer (docs/secs.md: merging the corpus, crash files).
+- `CXX=g++-13 pip install .` then `pytest python/tests`: the Python module (docs/python.md);
+  `python3 tools/bench_python.py`: its batch calls in maps/s.
+- Release: bump `project(... VERSION)` in CMakeLists.txt, add `docs/release-notes/vX.Y.Z.md`,
+  then (the user) `git tag vX.Y.Z && git push origin vX.Y.Z`: `.github/workflows/release.yml`
+  builds, tests and publishes the tools tarball, the wheel and the sdist.
 - `pre-commit run --all-files`: whitespace, YAML/JSON, clang-format 18.
 - `clang-tidy-18 -p build/clang <files>`: use the clang build's compile commands; with GCC's
   libstdc++, Clang 18 can't see `std::expected`.

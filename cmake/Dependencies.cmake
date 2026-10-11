@@ -36,3 +36,13 @@ target_include_directories(asio SYSTEM INTERFACE ${asio_SOURCE_DIR}/asio/include
 target_compile_definitions(asio INTERFACE ASIO_STANDALONE ASIO_NO_DEPRECATED)
 find_package(Threads REQUIRED)
 target_link_libraries(asio INTERFACE Threads::Threads)
+
+if(WAFEREDGE_PYTHON)
+  find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
+  FetchContent_Declare(pybind11
+    GIT_REPOSITORY https://github.com/pybind/pybind11.git
+    GIT_TAG v2.13.6
+    GIT_SHALLOW TRUE
+    SYSTEM)
+  FetchContent_MakeAvailable(pybind11)
+endif()

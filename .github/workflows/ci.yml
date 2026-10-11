@@ -84,6 +84,19 @@ jobs:
           name: fuzz-crashes
           path: ${{ runner.temp }}/crashes/
 
+  python:
+    # The wheel (scikit-build-core, CPU code only) and its pytest suite.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Build and install the wheel
+        run: CXX=g++-13 CC=gcc-13 pip install ".[test]"
+      - run: pytest python/tests
+
   format:
     runs-on: ubuntu-24.04
     steps:
