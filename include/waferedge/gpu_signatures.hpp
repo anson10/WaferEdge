@@ -6,10 +6,11 @@
 // C++20 and free of CUDA headers: included by the .cu implementation (nvcc 12.4 compiles at
 // most C++20, ADR-0001) and by C++23 tests and benchmarks. CUDA state lives in Impl.
 //
-// One run(): pack every map's bins and a small descriptor into one pinned host buffer, one
+// One batch: pack every map's bins and a small descriptor into one pinned host buffer, one
 // copy to the device, one kernel per requested signature (one block per map), one copy back,
-// one sync. On WSL2 each CUDA call costs ~20-90 us (docs/gpu.md), and moving the maps costs
-// more than computing on them, so every signature shares the one upload.
+// one sync. Two batches can be in flight (submit / collect), so packing overlaps GPU work. On WSL2
+// each CUDA call costs ~20-90 us (docs/gpu.md), and moving the maps costs more than computing on
+// them, so every signature shares the one upload.
 #include "waferedge/clusters.hpp"
 #include "waferedge/features.hpp"
 #include "waferedge/geometry.hpp"
@@ -34,8 +35,8 @@ enum class FeatureKernel : std::uint8_t {
     warp_aggregated,
 };
 
-// Where the time of the last run() went (milliseconds). Pack is measured on the host's steady
-// clock; the rest from CUDA events on the stream. Off by default: on WSL2 each
+// Where the time of the last run() (or collected batch) went (milliseconds). Pack is measured on
+// the host's steady clock; the rest from CUDA events on the stream. Off by default: on WSL2 each
 // cudaEventRecord is a ~15 us driver call, and they added ~60 us to every batch.
 struct RunTimings {
     float pack_ms = 0;     // host: copying the maps into the pinned upload buffer
@@ -61,9 +62,27 @@ public:
     // output is either empty (not computed) or has one slot per map. Buffers grow to the
     // largest batch seen and are reused; geometry tables are uploaded once per Geometry
     // (cached by Geometry::id). Returns false on a CUDA error; error() says which.
+    // Batches still in flight (submit) are collected first.
     bool run(std::span<const WaferMapView> maps, std::span<const Geometry* const> geometries,
              std::span<Features> features, std::span<HoughLine> lines,
              std::span<ClusterSummary> clusters = {});
+
+    // Overlapped batches: the host packs batch n+1 while the GPU works on batch n. submit()
+    // packs a batch into a free slot and enqueues its upload, kernels and download without
+    // waiting; collect() waits for the oldest submitted batch and copies its results into the
+    // outputs given to its submit(). The maps are copied by submit(); the outputs must stay
+    // valid until the batch is collected. At most kSlots batches in flight: submit() fails
+    // when both slots are busy. A submit() with nothing to compute puts nothing in flight.
+    //
+    //   engine.submit(batch[0]...);
+    //   for (n = 1; n < N; ++n) { engine.submit(batch[n]...); engine.collect(); }
+    //   engine.collect();
+    static constexpr std::size_t kSlots = 2;
+    bool submit(std::span<const WaferMapView> maps, std::span<const Geometry* const> geometries,
+                std::span<Features> features, std::span<HoughLine> lines,
+                std::span<ClusterSummary> clusters = {});
+    bool collect();
+    [[nodiscard]] std::size_t in_flight() const noexcept;
 
     [[nodiscard]] const std::string& error() const noexcept;
     // Timings of the last run() if set_timing(true) was in effect, else zeros. Timing runs

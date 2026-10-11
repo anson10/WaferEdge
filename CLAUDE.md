@@ -108,7 +108,8 @@ the machine, and the design sketch. Read both before starting work.
 - `build/<preset>/tools/waferedge-info`: the build and machine; quote it with any number.
 - `build/cuda/bench/bench-transfer`: host→device copy bandwidth, pageable vs pinned.
 - `build/cuda/bench/bench-gpu`: CPU (1 / 6 / 12 threads) vs GPU for each signature and all
-  three, by batch size (`_timed` variants split pack / upload / kernel / download).
+  three, by batch size (`_timed` variants split pack / upload / kernel / download;
+  `_overlapped` packs the next batch while the GPU runs this one, `submit` / `collect`).
   `ctest --preset cuda -L gpu`: GPU tests.
 - `build/cuda/bench/bench-gemm`: the GEMM ladder vs cuBLAS / cuBLASLt (wall-clock GFLOPS).
   **Compare GPU kernels in cycles** (`ncu --metrics sm__cycles_elapsed.max`): this laptop's

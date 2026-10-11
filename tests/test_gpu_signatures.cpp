@@ -389,3 +389,94 @@ TEST_CASE("CUDA Graphs: replayed batches equal the CPU, the cache follows shapes
     timed.check(engine);
     CHECK(engine.last_timings().features_ms > 0);
 }
+
+TEST_CASE("overlapped batches: submit / collect equal the CPU, two in flight") {
+    require_gpu();
+    const bool graphs = GENERATE(false, true);
+    SignatureEngine engine;
+    engine.set_graphs(graphs);
+    HoughTransform hough;
+    ClusterFinder finder;
+
+    // Batches of different sizes and shapes; a new shape (its geometry uploaded) while the
+    // previous batch is still on the GPU, and a batch big enough to grow its slot's buffers.
+    std::vector<Batch> batches(7);
+    std::uint32_t seed = 1300;
+    const std::size_t sizes[] = {16, 16, 300, 1, 2000, 16, 64};
+    for (std::size_t b = 0; b < batches.size(); ++b) {
+        const int side = b == 3 ? 52 : (b == 5 ? 26 : 40);
+        for (std::size_t i = 0; i < sizes[b]; ++i) {
+            batches[b].add(with_scratch(side, side, 60 + static_cast<unsigned>(i % 200), seed++));
+        }
+    }
+    struct Out {
+        std::vector<Features> f;
+        std::vector<HoughLine> l;
+        std::vector<ClusterSummary> c;
+    };
+    std::vector<std::vector<WaferMapView>> views;
+    std::vector<Out> out(batches.size());
+    for (std::size_t b = 0; b < batches.size(); ++b) {
+        views.emplace_back(batches[b].maps.begin(), batches[b].maps.end());
+        out[b] = {std::vector<Features>(sizes[b]), std::vector<HoughLine>(sizes[b]),
+                  std::vector<ClusterSummary>(sizes[b])};
+    }
+    const auto submit = [&](std::size_t b) {
+        return engine.submit(views[b], batches[b].per_map, out[b].f, out[b].l, out[b].c);
+    };
+
+    REQUIRE(submit(0));
+    CHECK(engine.in_flight() == 1);
+    for (std::size_t b = 1; b < batches.size(); ++b) {
+        REQUIRE(submit(b));
+        CHECK(engine.in_flight() == 2);
+        REQUIRE(engine.collect()); // batch b - 1
+        CHECK(engine.in_flight() == 1);
+    }
+    REQUIRE(engine.collect());
+    CHECK(engine.in_flight() == 0);
+    INFO(engine.error());
+
+    for (std::size_t b = 0; b < batches.size(); ++b) {
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < sizes[b]; ++i) {
+            const auto& map = batches[b].maps[i];
+            finder.run(map);
+            differ += (out[b].f[i] == backend::Scalar::features(map, *batches[b].per_map[i]) &&
+                       out[b].l[i] == hough.run(map) && out[b].c[i] == finder.summary())
+                          ? 0U
+                          : 1U;
+        }
+        INFO("batch " << b << " of " << sizes[b] << " maps, graphs " << graphs);
+        CHECK(differ == 0);
+    }
+
+    // run() collects what is still in flight first, into that batch's own outputs.
+    std::vector<Features> f0(sizes[0]);
+    REQUIRE(engine.submit(views[0], batches[0].per_map, f0, {}, {}));
+    std::vector<HoughLine> l1(sizes[1]);
+    REQUIRE(engine.run(views[1], {}, {}, l1));
+    CHECK(engine.in_flight() == 0);
+    CHECK(f0 == out[0].f);
+    CHECK(l1 == out[1].l);
+}
+
+TEST_CASE("overlapped batches: misuse is an error, not a hang") {
+    require_gpu();
+    Batch batch;
+    batch.add(synth::random_map(30, 30, 100, 7));
+    std::vector<WaferMapView> views(batch.maps.begin(), batch.maps.end());
+    std::vector<Features> f(1);
+    {
+        SignatureEngine engine;
+        CHECK_FALSE(engine.collect()); // nothing in flight
+        CHECK_FALSE(engine.error().empty());
+    }
+    SignatureEngine engine;
+    CHECK(engine.submit(views, batch.per_map, {}, {})); // nothing requested: nothing in flight
+    CHECK(engine.in_flight() == 0);
+    REQUIRE(engine.submit(views, batch.per_map, f, {}));
+    REQUIRE(engine.submit(views, batch.per_map, f, {}));
+    CHECK_FALSE(engine.submit(views, batch.per_map, f, {})); // both slots busy
+    CHECK_FALSE(engine.error().empty());
+}
