@@ -44,8 +44,9 @@ Every number below says which machine and which command produced it.
 ## Results
 
 *Laptop*: Ryzen 5 7535HS (6 cores / 12 threads, AVX2), RTX 3050 Laptop 6 GB (sm_86), WSL2
-Ubuntu 22.04, CUDA 12.4, GCC 13. *Container*: a 4-thread cloud VM (Xeon @ 2.1 GHz, AVX2, no
-GPU). `build/<preset>/tools/waferedge-info` prints the machine and build to quote with a
+Ubuntu 22.04, CUDA 12.4, GCC 13 (where the numbers below were measured; the laptop now runs
+Ubuntu 26.04 and CUDA 13.3, ADR-0020). *Container*: a 4-thread cloud VM (Xeon @ 2.1 GHz, AVX2,
+no GPU). `build/<preset>/tools/waferedge-info` prints the machine and build to quote with a
 number.
 
 ### Accuracy against FabEye's CNN
@@ -180,9 +181,9 @@ feature counts and ~17k maps/s for classification on one container core
 
 ## Build
 
-Needs CMake ≥ 3.25, Ninja and GCC 13 (Ubuntu 24.04 has it; on 22.04 use the
+Needs CMake ≥ 3.25, Ninja and GCC 13 (Ubuntu 24.04 and 26.04 package it; on 22.04 use the
 `ubuntu-toolchain-r/test` PPA). Clang 18 with libc++ 18 for the `clang` and `fuzz` presets;
-CUDA 12.4 and GCC 11 (nvcc's host compiler, see ADR-0001) for the `cuda` preset.
+CUDA 13.x for the `cuda` preset, with GCC 13 as nvcc's host compiler (ADR-0020).
 
 ```sh
 cmake --workflow --preset dev        # configure, build, test (Debug, GCC 13)
@@ -212,7 +213,7 @@ Run the loop by hand: `build/release/tools/tool-emulator data/waferlens_demo.wma
 
 ## Decisions and docs
 
-Architecture decision records: [docs/adr](docs/adr) (0001–0019). The roadmap and what is
+Architecture decision records: [docs/adr](docs/adr) (0001–0020). The roadmap and what is
 done: [ROADMAP.md](ROADMAP.md). Per area: [data](docs/data.md),
 [signatures](docs/signatures.md), [AVX2](docs/avx2.md), [GPU](docs/gpu.md),
 [inference](docs/inference.md), [evaluation](docs/evaluation.md), [SECS/HSMS/GEM](docs/secs.md),

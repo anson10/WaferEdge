@@ -3,7 +3,7 @@
 // Spatial signatures for a batch of wafer maps on the GPU (built with the cuda preset only):
 // the feature counts, the Hough line and the cluster summary, from one upload of the maps.
 //
-// C++20 and free of CUDA headers: included by the .cu implementation (nvcc 12.4 compiles at
+// C++20 and free of CUDA headers: included by the .cu implementation (nvcc compiles at
 // most C++20, ADR-0001) and by C++23 tests and benchmarks. CUDA state lives in Impl.
 //
 // One batch: pack every map's bins and a small descriptor into one pinned host buffer, one

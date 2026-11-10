@@ -68,7 +68,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "WAFEREDGE_CUDA": "ON",
-        "CMAKE_CUDA_HOST_COMPILER": "g++-11",
+        "CMAKE_CUDA_HOST_COMPILER": "g++-13",
         "CMAKE_CUDA_ARCHITECTURES": "86"
       }
     },

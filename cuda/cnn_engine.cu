@@ -1,5 +1,5 @@
 // FabEye's CNN on the GPU, end to end: bins up, logits down (docs/inference.md).
-// C++20 (nvcc 12.4's limit, ADR-0001).
+// C++20 (nvcc's limit with a GCC 13 host, ADR-0001).
 #include "cnn_kernels.cuh"
 #include "waferedge/gpu_cnn.hpp"
 

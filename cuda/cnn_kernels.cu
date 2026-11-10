@@ -1,6 +1,6 @@
 // FabEye's CNN on the GPU: preprocessing, implicit-GEMM convolutions (fp32 and tensor-core
 // fp16), max pooling, and the head (docs/inference.md). Activations are [channel][image][y][x].
-// C++20 (nvcc 12.4's limit, ADR-0001).
+// C++20 (nvcc's limit with a GCC 13 host, ADR-0001).
 #include "cnn_kernels.cuh"
 
 #include <algorithm>

@@ -41,16 +41,13 @@ jobs:
     runs-on: ubuntu-24.04
     # NVIDIA's registry: the same image as Docker Hub's nvidia/cuda, without Docker Hub's
     # anonymous pull limit (shared runner IPs hit it: PR #15 failed 3 times at the pull).
-    container: nvcr.io/nvidia/cuda:12.4.1-devel-ubuntu22.04
+    container: nvcr.io/nvidia/cuda:13.3.1-devel-ubuntu24.04
     steps:
-      # GCC 13 for the C++23 host code; nvcc uses the image's GCC 11 (ADR-0001).
+      # GCC 13 builds the C++23 host code and is nvcc's host compiler too (ADR-0020).
       - name: Install GCC 13, CMake and Ninja
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends software-properties-common git python3-pip
-          add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          apt-get install -y --no-install-recommends g++-13
-          pip3 install cmake==3.31.6 ninja==1.11.1.4
+          apt-get install -y --no-install-recommends git g++-13 cmake ninja-build
       - uses: actions/checkout@v4
       - run: cmake --preset cuda
       - run: cmake --build --preset cuda
