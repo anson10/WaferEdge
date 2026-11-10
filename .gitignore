@@ -21,3 +21,5 @@ compile_commands.json
 __pycache__/
 *.egg-info/
 dist/
+# local assistant notes, not part of the project
+CLAUDE.md
