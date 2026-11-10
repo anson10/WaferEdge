@@ -2,19 +2,23 @@
 
 What runs on the GPU, how it is checked, and what it costs, measured. The short version:
 
-- **Features**: the GPU computes 65,536 maps in **3 ms** (~22M maps/s), but getting the maps
-  there takes 10× longer, so end to end it reaches **~1.6M maps/s, about 1.7× one CPU core**
-  with AVX2, from batches of ~300 maps up. Too little work per byte to be worth PCIe.
+- **Features**: the GPU computes 65,536 maps in **4 ms** (~16M maps/s), but packing and
+  uploading them takes 6× longer, so end to end it peaks at **~2.7M maps/s at 1,024 maps, at
+  most ~1.3× one CPU core** with AVX2 (2.1M), and falls below that core again at 65,536 maps.
+  Too little work per byte to be worth PCIe.
 - **Hough transform**: 180 votes per fail die is enough work per byte. The GPU passes one CPU
-  core **from a batch of 4 maps**, and reaches **~1.2M maps/s, ~84× one core** (26–33× on
+  core **between 4 and 16 maps a batch**, and reaches **~1.7M maps/s, ~49× one core** (~20× on
   the real datasets end to end). Equal to the CPU's line on all 103,698 real maps.
-- **Clusters** (lock-free union-find): passes one core at ~64 maps, ~1.3M maps/s (~12×).
-- **All three from one upload**: ~0.82M maps/s, ~66× one CPU core, and **~9.4× the whole
-  CPU** (6 cores, 12 threads: ~87k maps/s), ahead of the whole CPU from **~16 maps** a batch.
+- **Clusters** (lock-free union-find): passes one core at ~64 maps, ~1.8M maps/s (~8×).
+- **All three from one upload**: ~0.94M maps/s, ~32× one CPU core, and **~6× the whole
+  CPU** (6 cores, 12 threads: ~150k maps/s), level with the whole CPU at **~16 maps** a batch.
 - **Where things run** follows from that (ADR-0007): features on the CPU always (the whole
-  CPU does 5.4M maps/s, the GPU never wins), Hough and clusters on the GPU from 16 maps.
+  CPU does 8.8M maps/s, the GPU never wins), Hough and clusters on the GPU from 16 maps.
 
-Machine: RTX 3050 6 GB Laptop (sm_86, 20 SMs), driver / runtime 12.4, WSL2; Ryzen 5 7535HS.
+Machine: RTX 3050 6 GB Laptop (sm_86, 20 SMs), WSL2; Ryzen 5 7535HS. Benchmarks: WSL2 Ubuntu
+26.04, CUDA 13.3, driver 621.14, GCC 13.4, re-measured 2026-11-10 (ADR-0020). Sections marked
+*CUDA 12.4* are Nsight Compute profiles and history from the first build (Ubuntu 22.04, driver
+551.76); the laptop then ran at lower clocks, so their absolute times are higher.
 
 ## The model in one screen
 
@@ -56,8 +60,9 @@ Two versions of the counting, as with AVX2:
   that hold the same bucket; one leader per group adds the group's size. One atomic per
   distinct bucket instead of one per lane: the AVX2 trick of counting a mask, in warp form.
 
-**v2 is about 2× slower** (kernel time for 65,536 maps: 6.0–6.3 ms against 3.0–3.7 ms).
-Nsight Compute on one launch of 4,096 maps says why (`ncu --set full`, base clock):
+**v2 is slower** (kernel time for 65,536 maps: 5.8 ms against 4.2 ms, `BM_gpu_*_timed`; on
+CUDA 12.4 it was 6.0–6.3 against 3.0–3.7 ms). Nsight Compute on one launch of 4,096 maps says
+why (`ncu --set full`, base clock; *CUDA 12.4*):
 
 | | v1 shared atomics | v2 warp-aggregated |
 |---|---|---|
@@ -73,7 +78,7 @@ lanes that hit the same address into a few internal passes. v2 replaced it with 
 older GPUs; on Ampere the hardware does it better. v1 is the default; v2 stays as the
 measured, documented experiment.
 
-### What limits v1 (Nsight Compute)
+### What limits v1 (Nsight Compute, *CUDA 12.4*)
 
 Occupancy is not the problem (100% theoretical, 95% achieved; 18 registers per thread). The
 **LSU pipe** (load / store unit: every global load and shared atomic) is at 92% while DRAM is
@@ -105,40 +110,40 @@ end (wall time); CPU = AVX2, one thread. Median of 3 repetitions.
 
 | Batch | CPU AVX2, 1 thread | GPU v1 | GPU latency per batch |
 |---|---|---|---|
-| 1 | 936k maps/s | 4.8k | 208 µs |
-| 16 | 913k | 74k | 216 µs |
-| 64 | 871k | 264k | 243 µs |
-| 256 | 905k | 805k | 318 µs |
-| 1,024 | 871k | 1.44M | 709 µs |
-| 4,096 | 908k | 1.50M | 2.7 ms |
-| 65,536 | 880k–908k | 1.58–1.60M | 41 ms |
+| 1 | 2.14M maps/s | 13.8k | 72 µs |
+| 16 | 2.13M | 208k | 77 µs |
+| 64 | 2.10M | 453k | 141 µs |
+| 256 | 2.08M | 1.35M | 189 µs (CV 72%) |
+| 1,024 | 2.11M | **2.74M** | 374 µs |
+| 4,096 | 2.08M | 2.13M | 1.9 ms |
+| 65,536 | 2.07M | 1.54M | 43 ms |
 
-**The GPU passes one CPU core at ~300 maps per batch and levels off at ~1.6M maps/s.** The
-comparison against all CPU cores (the roadmap's "AVX2, all threads") is still to come; with
-~6 cores at ~0.9M maps/s each, a multi-threaded CPU would likely beat the GPU at every batch
-size for this kernel.
+**The GPU passes one CPU core only between ~1,000 and ~4,000 maps per batch, by at most
+1.3×**, and falls behind again at 65,536, where packing the maps dominates (next table).
+Against all CPU cores (below) it never wins. (On CUDA 12.4, with the laptop at lower clocks,
+one core did ~0.9M maps/s and the GPU passed it at ~300 maps, levelling off at ~1.6M.)
 
 ### Where the time goes
 
-Same benchmark with CUDA events (`BM_gpu_*_timed`); the timing itself adds ~60 µs per batch
-(below), so these rows explain the breakdown, they are not the headline:
+Same benchmark with CUDA events (`BM_gpu_*_timed`); the timing itself adds ~20–45 µs per
+batch (below), so these rows explain the breakdown, they are not the headline:
 
 | Batch | Pack (CPU) | Upload | Kernel | Download | Total |
 |---|---|---|---|---|---|
-| 1 | 0 µs | 23 µs | 83 µs | 89 µs | 304 µs |
-| 256 | 29 µs | 43 µs | 92 µs | 91 µs | 361 µs |
-| 4,096 | 1.4 ms | 0.58 ms | 0.33 ms | 0.18 ms | 2.9 ms |
-| 65,536 | **26 ms (63%)** | 9.0 ms | **3.0 ms (7%)** | 1.2 ms | 41 ms |
+| 1 | 0 µs | 15 µs | 20 µs | 12 µs | 115 µs |
+| 256 | 13 µs | 81 µs | 71 µs | 11 µs | 208 µs |
+| 4,096 | 0.84 ms | 0.52 ms | 0.22 ms | 0.11 ms | 1.84 ms |
+| 65,536 | **17 ms (45%)** | 9.1 ms | **4.2 ms (11%)** | 1.1 ms | 39 ms |
 
-- **Small batches are all overhead.** A single 1,600-die map shows 83 µs of "kernel": that
-  is driver and scheduling time on WSL2, not computation.
+- **Small batches are all overhead.** A single 1,600-die map shows 20 µs of "kernel" (83 µs
+  on CUDA 12.4 and the older driver): driver and scheduling time on WSL2, not computation.
 - **Large batches are all data movement.** Copying 65,536 maps (105 MB, from 65,536 separate
-  heap buffers) into the pinned buffer takes 26 ms on the CPU, the upload 9 ms, the kernel 3.
+  heap buffers) into the pinned buffer takes 17 ms on the CPU, the upload 9 ms, the kernel 4.
   The fix is not a faster kernel but not copying: maps that arrive from the network straight
   into pinned memory (phase 4's zero-copy receive path) remove the largest step; packing
   each die into 2 bits (only "on wafer" and "fail" matter here) would cut the upload 4×.
 
-### A measurement trap: the timer changed the result
+### A measurement trap: the timer changed the result (*CUDA 12.4*)
 
 The first version recorded four CUDA events around every batch. Nsight Systems
 (`nsys profile -t cuda`) showed what each CUDA call costs on WSL2, averaged over 839 batches
@@ -223,7 +228,7 @@ alone. Breaking the tie rule on purpose fails the tie test (`gpu angle 179 ... c
 ### One optimisation iteration, driven by the profile
 
 The first version gave the vote table 24 KB of shared memory: three blocks per SM, but only
-148 of a 40×40 map's 180 angles per chunk (83 bins a row). Nsight Compute:
+148 of a 40×40 map's 180 angles per chunk (83 bins a row). Nsight Compute (*CUDA 12.4*):
 
 | | 24 KB votes, 1,024-die list | 30 KB votes, 512-die list |
 |---|---|---|
@@ -247,19 +252,20 @@ median of 3:
 
 | Batch | CPU Hough, 1 thread | GPU Hough | GPU latency |
 |---|---|---|---|
-| 1 | 14.6k maps/s | 5.0k | 199 µs |
-| 4 | 14.1k | **20.8k** | 192 µs |
-| 64 | 14.1k | 263k | 244 µs |
-| 1,024 | 14.5k | 1.22M | 842 µs |
-| 65,536 | (~14.5k) | 1.15–1.22M | 54–57 ms |
+| 1 | 34.7k maps/s | 5.5k | 183 µs |
+| 4 | 34.3k | 23.3k | 172 µs |
+| 16 | 34.5k | **92.9k** | 172 µs |
+| 64 | 34.2k | 444k | 144 µs |
+| 1,024 | 34.8k | 1.70M | 604 µs |
+| 65,536 | (~34.6k) | 1.18M | 56 ms |
 
-Real data, batches of 4,096, every copy included (`waferedge-maps`): WaferLens 651k maps/s
-against 19.9k on one CPU core (33×); WM-811K 401k against 15.4k (26×). With both kernels on
-one upload, features add little (WaferLens: 608k maps/s for features + Hough).
+Real data, batches of 4,096, every copy included (`waferedge-maps`, three runs): WaferLens
+845k–885k maps/s against 43.1k–43.7k on one CPU core (~20×); WM-811K 654k–657k against
+33.3k–34.1k (~20×).
 
-**Why the Hough wins and the features don't**: arithmetic intensity. The CPU spends ~69 µs a
-map on the Hough transform, so the ~200 µs a GPU call costs is paid back after 3–4 maps; it
-spends ~1 µs on the features, so it takes ~300 maps and the gain stays small.
+**Why the Hough wins and the features don't**: arithmetic intensity. The CPU spends ~29 µs a
+map on the Hough transform, so the ~170 µs a GPU call costs is paid back after ~6 maps; it
+spends ~0.5 µs on the features, so it takes ~1,000 maps and the gain stays small.
 
 ## Kernel 2: connected clusters, lock-free union-find
 
@@ -292,9 +298,9 @@ the shared-memory limit (65×65, 212×204, a 150×150 snake). Breaking the tie r
 test on exactly the two tie maps. `waferedge-maps`: **equal on 24,090 of 24,090 WaferLens and
 79,608 of 79,608 WM-811K maps** (including WM-811K's maps over 4,096 positions).
 
-**What bounds it** (Nsight Compute, 4,096 maps, 1.66 ms at base clock): divergence. Only 12.7
-of 32 threads per warp are active on average: ~10% of dies fail and every phase skips the
-rest, and `unite` loops a different number of times per lane (14% branch-resolving stalls,
+**What bounds it** (Nsight Compute, *CUDA 12.4*, 4,096 maps, 1.66 ms at base clock):
+divergence. Only 12.7 of 32 threads per warp are active on average: ~10% of dies fail and
+every phase skips the rest, and `unite` loops a different number of times per lane (14% branch-resolving stalls,
 26% barrier between the four phases). Occupancy 50% (shared memory). Gathering the fail dies
 into a dense list first, as the Hough kernel does, is the obvious next step; at ~20% of an
 all-signatures batch it isn't the bottleneck yet.
@@ -305,16 +311,16 @@ all-signatures batch it isn't the bottleneck yet.
 
 | Batch | CPU clusters, 1 thread | GPU clusters | GPU features + Hough + clusters | its latency |
 |---|---|---|---|---|
-| 1 | 200k maps/s | 5.5k | 5.1k | 198 µs |
-| 4 | 176k | 23.6k | 15.8k | 254 µs |
-| 64 | 107k | 273k | 185k | 345 µs |
-| 1,024 | 106k | 1.27M | 807k | 1.27 ms |
-| 65,536 | (~104k) | 1.31–1.32M | 0.82–0.83M | 79 ms |
+| 1 | 408k maps/s | 5.6k | 8.1k | 123 µs |
+| 4 | 382k | 23.3k | 28.9k | 138 µs |
+| 64 | 231k | 441k | 380k | 168 µs |
+| 1,024 | 228k | 1.81M | 938k | 1.09 ms |
+| 65,536 | (~230k) | 1.29M | 739k | 89 ms |
 
-One CPU core needs ~80 µs per map for all three (AVX2 features ~1 µs, Hough ~69 µs, clusters
-~9.5 µs): ~12.5k maps/s. The GPU passes it at a batch of ~4 and is ~66× faster at large
-batches. Real data, batches of 4,096, all copies included: WaferLens 482k maps/s, WM-811K
-247k (`waferedge-maps`, which also checks every map against the CPU).
+One CPU core needs ~32 µs per map for all three (AVX2 features ~0.5 µs, Hough ~29 µs, clusters
+~2.5–4.4 µs): ~30k maps/s. The GPU draws level with it at a batch of ~4 and is ~32× faster at
+1,024 maps. Real data, batches of 4,096, all copies included: WaferLens 578k–589k maps/s,
+WM-811K 378k–385k (`waferedge-maps`, three runs, which also checks every map against the CPU).
 
 ## The whole CPU, and the cost of waking threads
 
@@ -330,42 +336,45 @@ the exactly-once test caught it.)
 
 | | 1 thread | 6 threads | 12 threads |
 |---|---|---|---|
-| Features (AVX2) | 0.93M maps/s | 4.2M (4.6×) | 5.4M (5.9×) |
-| All three signatures | 13.3k | 61k (4.6×) | 91k (6.9×) |
+| Features (AVX2), 65,536 maps | 2.04M maps/s | 7.8M (3.8×) | 7.2M (3.5×; 8.8M spinning) |
+| All three signatures, 16,384 maps | 29.1k | 123k (4.2×) | 150k (5.2×) |
 
-The second hardware thread per core adds 28% for features and 50% for all three (Hough's
-dependent arithmetic leaves gaps the sibling thread fills).
+The second hardware thread per core adds 22% for all three (Hough's dependent arithmetic
+leaves gaps the sibling thread fills) and nothing measurable for the features (7.2–8.8M
+across runs). On CUDA 12.4's run, at lower clocks, it was 28% and 50%.
 
 **Small batches: waking threads is the cost.** With workers asleep on a condition variable,
-a batch of 4 maps took 248 µs on 6 threads and 458 µs on 12, against 4.4 µs on one thread:
+a batch of 4 maps took 101 µs on 6 threads and 176 µs on 12, against 2.0 µs on one thread:
 waking a thread through the kernel (a futex, the scheduler, the core leaving an idle state)
-costs ~100–200 µs under WSL2, the same order as a GPU call. **Spinning before sleeping**
+costs ~100–180 µs under WSL2, the same order as a GPU call. **Spinning before sleeping**
 (polling an atomic with the `pause` hint for up to 200 µs; release / acquire ordering hands
 the job over, the mutex still guards the sleepers so no wake-up is lost):
 
 | Features, 6 threads | Sleeping workers | Spinning workers |
 |---|---|---|
-| batch 4 | 248 µs | **5.6 µs** |
-| batch 64 | 246 µs | **23 µs** |
-| batch 1,024 | 448 µs | 290 µs |
+| batch 4 | 101 µs | **2.1 µs** |
+| batch 64 | 100 µs | **9.0 µs** |
+| batch 1,024 | 186 µs | 132 µs |
 
-But **spinning on all 12 hardware threads backfires**: a batch of 4 still took 238 µs. With
-every logical CPU spinning, anything else on the machine preempts a spinner and the caller
-waits for it. Low-latency systems spin on fewer threads than CPUs, often pinned; ADR-0007
-takes 6 of 12.
+**Spinning on all 12 hardware threads gains less and varies more**: a batch of 4 took 5.6 µs
+(CV 18%) against 2.1 µs on 6 threads; in the first measurement (CUDA 12.4 run) it backfired
+completely, 238 µs. With every logical CPU spinning, anything else on the machine preempts a
+spinner and the caller waits for it. Low-latency systems spin on fewer threads than CPUs,
+often pinned; ADR-0007 takes 6 of 12.
 
 ### GPU vs the whole CPU, all three signatures
 
 | Batch | Best CPU (6 or 12 threads, spinning) | GPU | |
 |---|---|---|---|
-| 1 | 14.1k maps/s (71 µs) | 5.1k (198 µs) | CPU 2.8× |
-| 4 | 30.7k | 15.8k | CPU 1.9× |
-| 16 | 48.9k | 56.3k | GPU: crossover |
-| 64 | 71.6k | 185k | GPU 2.6× |
-| 1,024 | 80.9k | 807k | GPU 10× |
-| 16,384 | 86.9k | 819k | GPU 9.4× |
+| 1 | 31.7k maps/s (32 µs) | 8.1k (123 µs) | CPU 3.9× |
+| 4 | 71.0k | 28.9k | CPU 2.5× |
+| 16 | 109k | 115k | GPU: crossover |
+| 64 | 125k | 380k | GPU 3.0× |
+| 1,024 | 150k | 938k | GPU 6.3× |
+| 16,384 | 153k | 903k | GPU 5.9× |
 
-For features alone the whole CPU (5.4M maps/s) beats the GPU (1.6M) at every batch size.
+For features alone the whole CPU (8.8M maps/s) beats the GPU (2.7M at best) at every batch
+size.
 
 ## CUDA Graphs: one call per batch
 
@@ -383,25 +392,28 @@ is capped at 32 graphs. Timing mode runs without graphs (events go between the s
 replays equal the CPU for all three signatures across new shapes, repeats, buffer growth and
 timing mode.
 
-`bench-gpu --benchmark_filter='BM_gpu_(all_signatures|all_signatures_graph)/'`, 40×40 maps:
+`bench-gpu --benchmark_filter='BM_gpu_(all_signatures|all_signatures_graph)/'`, 40×40 maps,
+median of 3; the CUDA 12.4 columns are the first build's run, at lower clocks:
 
-| All three signatures, batch | Individual calls | CUDA Graph |
-|---|---|---|
-| 1 | 195 µs | **110 µs** (−44%) |
-| 4 | 238 µs | **123 µs** |
-| 16 | 265 µs | **117 µs** (2.3×) |
-| 64 | 367 µs | **162 µs** |
-| 1,024 | 1.27 ms | 1.13 ms |
-| 65,536 | 78 ms | 78 ms |
+| All three signatures, batch | CUDA 12.4: individual calls | CUDA 12.4: graph | CUDA 13.3: individual calls | CUDA 13.3: graph |
+|---|---|---|---|---|
+| 1 | 195 µs | **110 µs** (−44%) | 123 µs | 121 µs |
+| 4 | 238 µs | **123 µs** | 138 µs | 139 µs |
+| 16 | 265 µs | **117 µs** (2.3×) | 139 µs | 143 µs |
+| 64 | 367 µs | **162 µs** | 168 µs | 164 µs |
+| 1,024 | 1.27 ms | 1.13 ms | 1.09 ms | 1.02 ms |
+| 65,536 | 78 ms | 78 ms | 89 ms | 87 ms |
 
-Clusters alone, batch 1: 163 → 99 µs. Large batches don't change: copying and computing
-dominate there. Nsight Systems, CPU time in CUDA API calls per batch of 16 (average over ~3,000
-batches): 3 launches × 29 µs + 2 copies × 28.5 µs ≈ 144 µs individually, against one
-`cudaGraphLaunch` of 63 µs; the sync's wait also fell (92 → 75 µs), since the driver submits
-the recorded batch at once.
+**On CUDA 13.3 the graph gains nothing for all three signatures.** Individual calls got
+cheaper (195 → 123 µs at one map) and a graph launch dearer: run back to back on the same day,
+the CUDA 12.4 build replays a batch of one in 99 µs and the 13.3 build in 119–122 µs
+(ADR-0020). Clusters alone still gain at batch 1: 178 → 112 µs (CV 14%; 163 → 99 µs on CUDA
+12.4). Large batches don't change: copying and computing dominate there. Nsight Systems on
+CUDA 12.4, CPU time in CUDA API calls per batch of 16 (average over ~3,000 batches): 3 launches
+× 29 µs + 2 copies × 28.5 µs ≈ 144 µs individually, against one `cudaGraphLaunch` of 63 µs.
 
-**With graphs the GPU passes the whole CPU from ~4 maps** (all three signatures: 32.6k maps/s
-against 30.7k), down from ~16; a single wafer is still faster on the CPU (71 µs vs 110 µs).
+**With CUDA 12.4 graphs moved the crossover with the whole CPU from ~16 maps to ~4**; with 13.3
+it is ~16 maps either way, and a single wafer is faster on the CPU (32 µs vs 121 µs).
 
 ## Overlapping the CPU's packing with the GPU's work
 
@@ -448,68 +460,68 @@ submit) is an error.
 
 ### Measured
 
-Laptop, `cuda` preset (waferedge 1.0.0, GCC 13.4, driver / runtime 12.4), 40×40 maps, all
+Laptop, `cuda` preset (waferedge 1.0.0, GCC 13.4, CUDA 13.3, driver 621.14), 40×40 maps, all
 three signatures, medians of 3 repetitions; time per batch in the steady state, so maps/s is
-the batch size over it. `graph` runs one batch at a time with a CUDA Graph (the previous
-section's best); `overlapped` keeps one batch in flight while the next is packed:
+the batch size over it. `graph` runs one batch at a time with a CUDA Graph; `overlapped`
+keeps one batch in flight while the next is packed:
 
 | Batch | One at a time, graph | Overlapped | Overlapped, graph | Gain (graph → overlapped graph) |
 |---|---|---|---|---|
-| 1 | 154 µs (6.5k maps/s) | 168 µs | **89 µs** (11.3k) | 1.7× |
-| 16 | 121 µs (132k) | 178 µs | **87 µs** (184k) | 1.4× |
-| 64 | 165 µs (387k) | 201 µs | **97 µs** (660k) | 1.7× |
-| 256 | 363 µs (706k) | 347 µs | **286 µs** (895k) | 1.3× |
-| 1,024 | 1.29 ms (793k) | 1.09 ms | **1.00 ms** (1.02M) | 1.3× |
-| 4,096 | 5.40 ms (758k) | 4.27 ms | **3.90 ms** (1.05M) | 1.4× |
-| 16,384 | 22.8 ms (718k) | 15.0 ms | **15.3 ms** (1.07M) | 1.5× |
-| 65,536 | (unstable: 268–487 ms) | 56.2 ms | **56.1 ms** (1.17M) | |
+| 1 | 121 µs (8.3k maps/s) | 69 µs | **66 µs** (15.1k) | 1.8× |
+| 16 | 143 µs (112k) | 72 µs | **71 µs** (224k) | 2.0× |
+| 64 | 164 µs (389k) | 96 µs (CV 22%) | **85 µs** (752k) | 1.9× |
+| 256 | 297 µs (862k) | 210 µs | **212 µs** (1.21M) | 1.4× |
+| 1,024 | 1.02 ms (1.00M) | 859 µs | **860 µs** (1.19M) | 1.2× |
+| 4,096 | 4.41 ms (930k) | 3.19 ms | **3.22 ms** (1.27M) | 1.4× |
+| 16,384 | 18.4 ms (893k) | 12.2 ms | **12.3 ms** (1.33M) | 1.5× |
+| 65,536 | 86.6 ms (757k) | 49.1 ms | **48.7 ms** (1.35M) | 1.8× |
 
-- **Large batches gain what the model predicted:** 1.5× at 16,384 maps, from ~720k to
-  ~1.07M maps/s; the packing now hides behind the GPU's copies and kernels. At 65,536 the
-  overlapped run gives 1.17M maps/s, against ~0.84M one batch at a time in the earlier run
-  (78 ms, the CUDA Graphs table above).
+- **Large batches gain what the model predicted:** 1.5× at 16,384 maps, from ~890k to
+  ~1.33M maps/s; the packing now hides behind the GPU's copies and kernels. At 65,536 the
+  gain is 1.8×.
 - **Small batches gain too, for a different reason:** with one batch in flight, the next
-  batch's `cudaGraphLaunch` goes in while the previous one is still running, so the driver's
-  ~60 µs of CPU work per call on WSL2 overlaps the GPU's work instead of adding to it. A
-  batch of 1 to 64 maps costs ~90 µs instead of 120–165 µs.
+  batch's driver calls go in while the previous one is still running, so the driver's CPU
+  work per call on WSL2 overlaps the GPU's work instead of adding to it. A batch of 1 to 64
+  maps costs 66–85 µs instead of 121–164 µs.
 - **That is throughput, not latency.** Each batch still waits for its own upload, kernels
   and download, and in the overlapped loop it is collected one iteration later. For a wafer
   that has to be decided now, one batch at a time stays the lower-latency choice; overlap
   pays when maps arrive faster than one batch's round trip (re-scoring history, many tools).
-- **Without graphs, small batches got slower** (168–201 µs against 121–165 µs one at a time
-  with a graph): each batch then makes five driver calls, and two streams interleave them.
-  Overlap and graphs belong together.
-- **The one-at-a-time 65,536 row was unstable** in this run (two passes: 268 and 487 ms,
-  CV 8–16%, against 78 ms in the earlier run), with the machine's load average at 4.3 right
-  after a full build. It isn't compared; the overlapped rows at that size were steady (CV
-  0.6–1.9%).
+- **Graphs add little to overlap on CUDA 13.3** (69–96 µs without, 66–85 µs with, for 1 to
+  64 maps). On CUDA 12.4, overlap without graphs made small batches *slower* (168–201 µs
+  against 121–165 µs one at a time with a graph): five driver calls per batch on two
+  interleaved streams cost more than they hid. Cheaper individual calls on the new driver
+  removed that penalty.
+- In the CUDA 12.4 run the one-at-a-time 65,536 row was unstable (268 and 487 ms right after a
+  full build) and wasn't compared; here it was steady (CV 5%).
 
 ## Batching: latency against throughput
 
-A batch costs a fixed overhead (driver calls; ~110 µs with a CUDA Graph on WSL2) plus a
-part that grows with the number of maps. Bigger batches spread the overhead over more maps,
-so throughput rises, but every map in the batch waits for the whole batch, so latency rises
-too. From the tables above (all three signatures, 40×40, CUDA Graphs):
+A batch costs a fixed overhead (driver calls; ~120 µs on WSL2, with or without a CUDA Graph
+on CUDA 13.3) plus a part that grows with the number of maps. Bigger batches spread the
+overhead over more maps, so throughput rises, but every map in the batch waits for the whole
+batch, so latency rises too. From the tables above (all three signatures, 40×40, CUDA Graphs,
+one batch at a time):
 
 | Batch | Throughput | Latency of the batch | |
 |---|---|---|---|
-| 1 | ~9k maps/s | 110 µs | overhead only |
-| 16 | ~137k maps/s | 117 µs | 16× the maps for 7% more time |
-| 64 | ~395k maps/s | 162 µs | |
-| 1,024 | ~0.9M maps/s | 1.13 ms | |
-| 65,536 | ~0.84M maps/s | 78 ms | saturated: latency only grows |
+| 1 | ~8k maps/s | 121 µs | overhead only |
+| 16 | ~112k maps/s | 143 µs | 16× the maps for 18% more time |
+| 64 | ~389k maps/s | 164 µs | |
+| 1,024 | ~1.0M maps/s | 1.02 ms | |
+| 65,536 | ~0.76M maps/s | 87 ms | saturated: latency only grows |
 
 So for a stream of wafers the batch should be as large as the arrival rate fills within the
 latency budget, and no larger:
 - **Below ~1,000 maps the GPU is overhead-bound**: a batch of 16 costs about what a batch of
-  1 costs. If wafers arrive faster than ~1 per 100 µs, batching them is free.
+  1 costs. If wafers arrive faster than ~1 per 120 µs, batching them is free.
 - **Above ~1,000 maps it is throughput-bound**: doubling the batch doubles its latency and
   adds nothing.
 - **A batch must close on a deadline as well as a size**, or a slow tool's wafers wait for
   maps that don't come. ADR-0007 closes signature batches at 4,096 maps or 2 ms; the edge
   host's detectors close at B maps or D µs from the oldest wafer (ADR-0016).
 
-In the edge pipeline (docs/pipeline.md, laptop) that trade-off measured end to end: at 100
+In the edge pipeline (docs/pipeline.md, laptop, the *CUDA 12.4* run) that trade-off measured end to end: at 100
 to 10,000 wafers/s, the GPU rules with batch 64 / 2 ms took 2.2–3.5 ms median sort →
 decision, almost all of it the deadline (a batch of 64 never filled at those rates), against
 0.3–0.5 ms for the rules on one CPU core. A tool sorts a wafer every few seconds to minutes,
