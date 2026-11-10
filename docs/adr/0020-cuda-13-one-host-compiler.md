@@ -42,7 +42,30 @@ ADR-0001 stays where it is.
   warnings and passes all 221 tests, the 28 `gpu` tests included.
 - The CUDA build needs CUDA 13.x and a driver for it (580 or newer on Windows for WSL2).
   CUDA 13 dropped GPUs older than compute capability 7.5; sm_86 is unaffected.
-- Numbers in the README and `docs/` measured before this change say CUDA 12.4 / driver 551.76
-  next to them; they stay as measured and are re-measured on CUDA 13.3 when next touched.
+- **CUDA Graph launches cost ~20–25 µs more** with the 13.3 runtime (below). Graphs no longer
+  move the CPU/GPU crossover earlier; overlapping batches still pays.
+- The README's numbers were re-measured on the new setup. The detailed tables in `docs/` keep
+  the setup they were measured on (CUDA 12.4, driver 551.76) and are re-measured when next
+  touched.
+
+## Measured: the old build against the new, same day
+The old 22.04 install was kept, so its CUDA 12.4 binaries (built 2026-10-11) and the new CUDA
+13.3 ones ran back to back on 2026-11-10, alternating, on the same driver (621.14). Medians of
+3 repetitions, two or three rounds each:
+
+| | Old (22.04, CUDA 12.4, nvcc host GCC 11) | New (26.04, CUDA 13.3, GCC 13) |
+|---|---|---|
+| All signatures, 1 CPU thread, 1 map | 31.6–32.7 µs | 31.6–33.2 µs |
+| All signatures, GPU, no graph, 1 / 16,384 maps | 131–134 µs / 18.2–18.5 ms | 127–133 µs / 18.7 ms |
+| All signatures, GPU with a graph, 1 map | **99 µs** | 119–122 µs |
+| All signatures, GPU with a graph, 16 maps | **109 µs** | 136–139 µs |
+| Overlapped with a graph, 1 / 16,384 maps | **52–54 µs** / 12.5–12.6 ms | 62 µs / 12.4–12.5 ms |
+| CNN, int8, batch 1 / 256 | 3.03k / 25.2k maps/s | 3.16–3.18k / 25.1–25.3k maps/s |
+| Sort → decision p50 / p99, synthetic, 1,000/s | 156–164 / 293–328 µs | 161–170 / 305–319 µs |
+
+Only graph launches changed. The numbers first published (Ubuntu 22.04, October) are slower
+than both columns: 71 µs for the CPU row, 198 µs for the GPU row without a graph and a GPU
+clock capped at 0.83–0.99 GHz in the CNN run, against 1.46 GHz median now. That difference is
+the laptop's state (power and clocks under Windows), not the toolchain.
 - If a later GCC or CUDA breaks this pairing again, the preset and the CI image are still the
   only two places to change.

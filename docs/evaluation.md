@@ -96,8 +96,11 @@ one line is the point of the rules: a wrong call can be read, argued with and fi
 
 ## Speed
 
-Signals plus rules, one core, `release` preset (Ryzen 5 7535HS, WSL2): 12.9k maps/s on
-WM-811K test, 14.2k maps/s on WaferLens (`waferedge-classify eval` prints it). The Hough
+Signals plus rules, one core, `release` preset (Ryzen 5 7535HS, WSL2 Ubuntu 26.04, GCC 13,
+2026-11-10; median of 3): 30.1k maps/s on WM-811K test, 32.9k maps/s on WaferLens
+(`waferedge-classify eval` prints it). The first measurement (Ubuntu 22.04, 2026-10-09) gave
+12.9k and 14.2k; the old build runs as fast as the new one on the same day (ADR-0020), so the
+difference is the laptop's clocks, not the toolchain. The Hough
 transform is most of that cost (docs/signatures.md). For scale, FabEye's README gives ~412
 wafers/s for the CNN on ONNX Runtime CPU at batch 32; phase 2b measures the CNN on WaferEdge's
 own GPU engine on this machine.

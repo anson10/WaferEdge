@@ -14,7 +14,7 @@ a lot hold (S2F41) back to the tool.
 ## The answer, in short
 
 - **The hold reaches the tool within milliseconds of the sort result.** With the rules on one
-  CPU core, sort result → decision is 0.3–0.5 ms at the median and 0.7–2.3 ms at p99, at
+  CPU core, sort result → decision is 0.13–0.16 ms at the median and 0.26–0.31 ms at p99, at
   1,000–5,000 wafers/s (laptop). A tool sorts a wafer every few seconds to minutes, so the
   hold always lands before the lot's next wafer.
 - **What decides how early an excursion is caught is the hold rule and the detector, not the
@@ -26,7 +26,7 @@ a lot hold (S2F41) back to the tool.
   holds out of 211. With a perfect detector the cross-lot rule alone matches WaferLens's
   alarm; the rest of the gap is the rules detector missing patterned wafers.
 - **The CNN is more accurate than the rules** (macro-F1 0.858 vs 0.655 on WM-811K's test
-  lots) and runs at ~11,000–13,000 maps/s on WaferEdge's own GPU kernels. **At a tool's
+  lots) and runs at ~19,000–26,000 maps/s on WaferEdge's own GPU kernels. **At a tool's
   wafer rate the CPU rules are the faster choice**: the GPU's batch deadline and driver calls
   cost more than classifying one map.
 
@@ -44,9 +44,9 @@ Every number below says which machine and which command produced it.
 ## Results
 
 *Laptop*: Ryzen 5 7535HS (6 cores / 12 threads, AVX2), RTX 3050 Laptop 6 GB (sm_86), WSL2
-Ubuntu 22.04, CUDA 12.4, GCC 13 (where the numbers below were measured; the laptop now runs
-Ubuntu 26.04 and CUDA 13.3, ADR-0020). *Container*: a 4-thread cloud VM (Xeon @ 2.1 GHz, AVX2,
-no GPU). `build/<preset>/tools/waferedge-info` prints the machine and build to quote with a
+Ubuntu 26.04, CUDA 13.3, GCC 13, driver 621.14; re-measured 2026-11-10 (ADR-0020 compares
+the old and new builds on the same day). *Container*: a 4-thread cloud VM (Xeon @ 2.1 GHz,
+AVX2, no GPU). `build/<preset>/tools/waferedge-info` prints the machine and build to quote with a
 number.
 
 ### Accuracy against FabEye's CNN
@@ -58,7 +58,7 @@ Macro-F1 on the same maps ([docs/evaluation.md](docs/evaluation.md)):
 | WM-811K test, lot-disjoint, 25,875 maps | 0.655 | 0.858 | 0.118 |
 | WaferLens, simulated, 24,090 maps | 0.645 | 0.909 | 0.132 |
 
-The rules explain every call in one line and run at ~14,000 maps/s on one core; they hold
+The rules explain every call in one line and run at ~30,000 maps/s on one core; they hold
 up on none, edge-ring, center and near-full and lose on edge-loc, loc and scratch. FabEye's
 CNN on WaferEdge's engine keeps FabEye's macro-F1 in fp32 and fp16 and its conformal coverage
 in every precision (90% target: 0.8925 / 0.8926 / 0.8951 for fp32 / fp16 / int8;
@@ -72,31 +72,35 @@ in every precision (90% target: 0.8925 / 0.8926 / 0.8951 for fp32 / fp16 / int8;
 All three signatures (features, Hough line, clusters) from one upload, 40×40 maps, laptop,
 end to end per batch ([docs/gpu.md](docs/gpu.md)):
 
-| Batch | Whole CPU (6 cores, spinning pool) | GPU | GPU with CUDA Graphs |
+| Batch | Whole CPU (6 or 12 threads, spinning pool) | GPU | GPU with CUDA Graphs |
 |---|---|---|---|
-| 1 | 14.1k maps/s (71 µs) | 5.1k (198 µs) | 9.1k (110 µs) |
-| 16 | 48.9k | 56.3k | 137k (117 µs) |
-| 1,024 | 80.9k | 807k | 906k (1.13 ms) |
-| 16,384 | 86.9k | 819k | |
+| 1 | 31.8k maps/s (31 µs) | 8.1k (123 µs) | 8.2k (122 µs) |
+| 16 | 110k | 110k | 113k (142 µs) |
+| 1,024 | 152k | 986k | 916k (1.12 ms) |
+| 16,384 | 151k | 875k | 886k (18.5 ms) |
 
-The GPU passes the whole CPU from ~16 maps a batch (~4 with CUDA Graphs) and is ~9× it at
-large batches. Packing the next batch while the GPU works on this one (two buffer sets and
-streams) adds 1.3–1.7× throughput: ~1.07M maps/s at 16,384 maps, and ~90 µs per batch of
-1–64 maps with CUDA Graphs (`BM_gpu_all_signatures_overlapped_graph`). For the feature counts alone the whole CPU (5.4M maps/s) beats the GPU at
-every size: too little work per byte to pay for PCIe. Below ~1,000 maps a batch is all
+The GPU draws level with the whole CPU at ~16 maps a batch and is ~6× it at large batches.
+CUDA Graphs no longer move the crossover earlier: with CUDA 13.3 each graph launch costs
+~20–25 µs more than with 12.4 (ADR-0020). Packing the next batch while the GPU works on this
+one (two buffer sets and streams) adds 1.3–2.1× throughput: ~1.30M maps/s at 16,384 maps,
+and 62–87 µs per batch of 1–64 maps with CUDA Graphs
+(`BM_gpu_all_signatures_overlapped_graph`). For the feature counts alone the whole CPU
+(8.5M maps/s) beats the GPU (2.3M) at every size: too little work per byte to pay for PCIe. Below ~1,000 maps a batch is all
 overhead, above it all throughput, so batches close on a size or a deadline (ADR-0007).
 
-`build/cuda/bench/bench-gpu --benchmark_filter='BM_(cpu_all_signatures_threads|gpu_all_signatures|gpu_all_signatures_graph)/'`.
+`build/cuda/bench/bench-gpu --benchmark_filter='BM_(cpu_all_signatures_threads|gpu_all_signatures|gpu_all_signatures_graph|gpu_all_signatures_overlapped_graph)/' --benchmark_repetitions=3`
+(medians).
 
-FabEye's CNN, end to end per batch, laptop (GPU power-capped at 0.83–0.99 GHz during the
-run; ±10–20%):
+FabEye's CNN, end to end per batch, laptop (GPU SM clock median 1.46 GHz for WaferEdge's runs
+and 1.67 GHz for the yardsticks'; wall clock on this laptop, read as ±10–20%):
 
 | Batch | ONNX Runtime CPU | PyTorch fp16 (GPU) | WaferEdge fp16 | WaferEdge int8 |
 |---|---|---|---|---|
-| 1 | 540 maps/s | 254 | 964 | 1,212 (0.83 ms) |
-| 256 | 790 | 6,283 | 10,960 | 12,960 |
+| 1 | 895 maps/s | 605 | 2,076 | 3,080 (0.32 ms) |
+| 256 | 1,092 | 9,756 | 19,448 | 25,516 |
 
-`build/cuda/bench/bench-cnn`, `python3 tools/bench_cnn_yardsticks.py`.
+`build/cuda/bench/bench-cnn --benchmark_filter='fused:1/graph:0' --benchmark_repetitions=3`,
+`python3 tools/bench_cnn_yardsticks.py`.
 
 ### Decoding the equipment protocol
 
@@ -120,20 +124,22 @@ transaction. The decoder, the HSMS framing and the GEM layer are fuzzed with lib
 The tool emulator and the edge host in one process, HSMS over TCP, latency from each wafer's
 *scheduled* time in an open-loop schedule, so a stall delays the wafers behind it and
 coordinated omission is counted ([docs/pipeline.md](docs/pipeline.md), ADR-0015). Laptop, one
-worker, CPU rules:
+worker, CPU rules, median of 3 runs per row:
 
 | Maps | Wafers/s | Dropped | Decision p50 | p99 | p99.9 | HOLD at the tool, p50 |
 |---|---|---|---|---|---|---|
-| synthetic 40×40 | 1,000 | 0 | 338 µs | 680 µs | 1.4 ms | 487 µs |
-| synthetic 40×40 | 5,000 | 0 | 258 µs | 2.3 ms | 10.7 ms | 379 µs |
-| WaferLens demo | 1,000 | 0 | 375 µs | 827 µs | 4.1 ms | 639 µs |
-| WaferLens demo | 10,000 | 0 | 309 µs | 15.2 ms | 16.1 ms | 532 µs |
+| synthetic 40×40 | 1,000 | 0 | 162 µs | 309 µs | 428 µs | 229 µs |
+| synthetic 40×40 | 5,000 | 0 | 130 µs | 258 µs | 477 µs | 213 µs |
+| WaferLens demo | 1,000 | 0 | 176 µs | 350 µs | 477 µs | 358 µs |
+| WaferLens demo | 10,000 | 0 | 130 µs | 311 µs | 709 µs | 218 µs |
 
-Overload turns into counted drops, not an unbounded queue: one worker saturates at ~20,000
-synthetic maps/s on the laptop. Two runs hit a 1.1–1.5 s pause of the whole process (WSL2)
-that six reruns didn't reproduce; the open-loop schedule made it visible, and
-docs/pipeline.md reports it rather than hiding it. With the GPU, the CNN in fp16 (batch 8, 0.5 ms deadline) takes
-1.4 ms median at 1,000 wafers/s.
+Overload turns into counted drops, not an unbounded queue: one worker keeps up with 30,000
+synthetic maps/s on the laptop and starts dropping at 40,000. WSL2 can pause the whole
+process: in the earlier measurement two runs hit a 1.1–1.5 s pause that six reruns didn't
+reproduce, and here one of the four WaferLens runs at 10,000/s had a 2.9 ms p99.9; the
+open-loop schedule makes such stalls visible, and docs/pipeline.md reports them rather than
+hiding them. With the GPU, the CNN in fp16 (batch 8, 0.5 ms deadline) takes 1.1 ms median
+at 1,000 wafers/s.
 
 `build/release/bench/bench-latency`, `... --maps data/waferlens_demo.wmap`,
 `build/cuda/bench/bench-latency --maps data/waferlens_demo.wmap --rates 1000 --detector
