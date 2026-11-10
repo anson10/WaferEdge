@@ -1,6 +1,6 @@
 # ADR-0001: C++23 on GCC 13 for the host, CUDA 12.4 (C++20) for the GPU
 
-- **Status:** Accepted
+- **Status:** Accepted; the CUDA version and nvcc's host compiler are superseded by ADR-0020
 - **Date:** 2026-10-09
 
 ## Context

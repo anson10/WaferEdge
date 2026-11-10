@@ -107,22 +107,25 @@ Synthetic maps, `build/release/bench/bench-features --benchmark_filter=BM_featur
 
 | Map | Scalar | AVX2 | Speed-up |
 |---|---|---|---|
-| 24² | 599k maps/s | 1.89M | 3.2× |
-| 30² | 371k | 1.35M | 3.7× |
-| 40² | 199k | 793k | 4.0× |
-| 64² | 64k | 347k | 5.4× |
+| 24² | 1.30M maps/s | 4.18M | 3.2× |
+| 30² | 788k | 2.96M | 3.8× |
+| 40² | 398k | 1.84M | 4.6× |
+| 64² | 140k | 725k | 5.2× |
 
 Real data, whole passes over the file, `build/release/tools/waferedge-maps <file>`, several
 runs (whole-file timings on this laptop swing ±25% between runs: WSL2, boost clocks and other
 load; the synthetic benchmark above is steadier because it reports a median of repetitions):
 
-| Data | Scalar | AVX2 | Speed-up |
+| Data | Scalar | AVX2 | Speed-up (same run) |
 |---|---|---|---|
-| WaferLens, 24,090 maps, 3 runs | 303k–314k maps/s | 1.03M–1.13M | 3.3–3.7× |
-| WM-811K, 79,608 maps, 5 runs | 180k–208k | 531k–860k | 2.6–4.7× (median of runs ≈ 3.9×) |
+| WaferLens, 24,090 maps, 3 runs | 646k–651k maps/s | 2.60M–2.82M | 4.0–4.4× |
+| WM-811K, 79,608 maps, 3 runs | 366k–424k | 1.63M–1.93M | 4.5–4.7× |
 
 Larger maps gain more: the per-map costs (nine flushes, the scalar tail) are spread over more
-blocks. Ryzen 5 7535HS (Zen 3+), WSL2, GCC 13.4, one thread.
+blocks. Ryzen 5 7535HS (Zen 3+), WSL2 Ubuntu 26.04, GCC 13.4, one thread, re-measured
+2026-11-10. The first measurement (Ubuntu 22.04, the laptop at lower clocks) gave about half
+these rates and speed-ups of 3.2–5.4× (synthetic), 3.3–3.7× (WaferLens) and 2.6–4.7×
+(WM-811K); the old build runs as fast as the new one on the same day (ADR-0020).
 
 ## What it means for the pipeline: Amdahl's law
 

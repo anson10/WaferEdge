@@ -3,7 +3,7 @@
 // Two slots, each with its own buffers and stream, let the host pack the next batch while the
 // GPU works on the current one (submit / collect, docs/gpu.md).
 //
-// C++20 (nvcc 12.4's limit, ADR-0001). Kernels live in their own .cu files behind
+// C++20 (nvcc's limit with a GCC 13 host, ADR-0001). Kernels live in their own .cu files behind
 // detail::launch_* (kernels.cuh).
 #include "kernels.cuh"
 #include "waferedge/backend.hpp"

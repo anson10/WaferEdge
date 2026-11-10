@@ -85,15 +85,18 @@ What this says before any classifier is fitted:
 
 ## Throughput (scalar, release preset, Ryzen 5 7535HS, WSL2)
 
-Each stage alone, whole passes over the file, `waferedge-maps`:
+Each stage alone, whole passes over the file, `waferedge-maps`, median of 3 runs (WSL2 Ubuntu
+26.04, GCC 13.4, 2026-11-10):
 
 | Stage | WaferLens (maps/s) | WM-811K (maps/s) |
 |---|---|---|
-| Zone / sector features | 401k | 274k |
-| Clusters | 146k | 106k |
-| Hough (180 angles) | 19k | 13k |
-| Join count | 196k | 148k |
+| Zone / sector features | 651k | 392k |
+| Clusters | 296k | 220k |
+| Hough (180 angles) | 38k | 31k |
+| Join count | 383k | 269k |
 
-The Hough transform costs ~10× the rest together (every fail die votes 180 times): the first
-candidate for the GPU (phase 2a, kernel 3). `build/release/bench/bench-features` gives the
+The Hough transform costs ~3.5× the other three stages together (every fail die votes 180
+times; WaferLens: 26 µs a map against 7.5 µs): the first candidate for the GPU (phase 2a,
+kernel 3). The first measurement (Ubuntu 22.04, the laptop at lower clocks) gave about half
+these rates: 401k / 146k / 19k / 196k on WaferLens; the ratio between stages is the same. `build/release/bench/bench-features` gives the
 same stages on synthetic maps by size (24² to 64²).

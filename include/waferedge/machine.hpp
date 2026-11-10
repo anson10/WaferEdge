@@ -29,7 +29,7 @@ struct GpuInfo {
     int compute_minor;
     std::size_t global_memory_bytes;
     int multiprocessors;
-    int driver_version;  // CUDA driver API version, e.g. 12040 for 12.4
+    int driver_version;  // CUDA driver API version, e.g. 13030 for 13.3
     int runtime_version; // CUDA runtime the binary was built against
 };
 

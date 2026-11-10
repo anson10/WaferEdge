@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(WAFEREDGE_CUDA "Build the CUDA backend (needs nvcc 12.x)" OFF)
+option(WAFEREDGE_CUDA "Build the CUDA backend (needs CUDA 13.x)" OFF)
 option(WAFEREDGE_TESTS "Build the Catch2 tests" ON)
 option(WAFEREDGE_BENCH "Build the Google Benchmark binaries" ON)
 option(WAFEREDGE_TOOLS "Build the command-line tools" ON)
@@ -17,7 +17,8 @@ set(WAFEREDGE_SANITIZE "" CACHE STRING "Sanitizers: empty, 'address,undefined', 
 
 if(WAFEREDGE_CUDA)
   enable_language(CUDA)
-  # nvcc 12.4 accepts C++20 at most: .cu files are C++20, the host code C++23 (ADR-0001).
+  # nvcc with a GCC 13 host compiles at most C++20: .cu files are C++20, the host code C++23
+  # (ADR-0001, ADR-0020).
   set(CMAKE_CUDA_STANDARD 20)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)

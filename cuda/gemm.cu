@@ -1,5 +1,5 @@
 // The GEMM ladder: C = A * B, row-major, one rung per kernel (docs/inference.md).
-// C++20 (nvcc 12.4's limit, ADR-0001).
+// C++20 (nvcc's limit with a GCC 13 host, ADR-0001).
 #include "waferedge/gemm.hpp"
 
 #include <cuda_fp16.h>

@@ -91,13 +91,13 @@ Read from `~/FabEye`; never modify that repo.
   The test split comes from `~/FabEye/data/wm811k.py` (`load_processed()`, lot split).
 
 ## Machine
-- Windows laptop, WSL2 Ubuntu 22.04; AMD Ryzen 5 7535HS (6 cores / 12 threads, AVX2, no
-  AVX-512); 7.4 GB RAM visible to WSL.
-- **GPU: NVIDIA GeForce RTX 3050 6 GB Laptop, compute capability 8.6**, driver 551.76;
-  **CUDA 12.4** installed at `/usr/local/cuda` (`nvcc` on PATH). Nsight tools: check / install
-  in phase 2.
-- GCC 11.4 (system, nvcc's host compiler), GCC 13.4 (`g++-13`), Clang 18.1 with libc++ 18
-  (apt.llvm.org), clang-format/clang-tidy 18, pre-commit, CMake 4.x, Ninja. `c++` on PATH is a
+- Windows laptop, WSL2 Ubuntu 26.04 (22.04 until 2026-11-10); AMD Ryzen 5 7535HS (6 cores /
+  12 threads, AVX2, no AVX-512); 7.4 GB RAM visible to WSL.
+- **GPU: NVIDIA GeForce RTX 3050 6 GB Laptop, compute capability 8.6**, driver 621.14;
+  **CUDA 13.3** at `/usr/local/cuda` (`nvcc` on PATH; CUDA 12.4 and driver 551.76 until
+  2026-11-10, ADR-0020). Nsight tools: check / install in phase 2.
+- GCC 15 (system), GCC 13.4 (`g++-13`, also nvcc's host compiler), Clang 18.1 with libc++ 18,
+  clang-format/clang-tidy 18, pre-commit, CMake 4.x, Ninja. `c++` on PATH is a
   SUMO wrapper: the presets name every compiler.
 
 ## Decisions taken (2026-10-09)
